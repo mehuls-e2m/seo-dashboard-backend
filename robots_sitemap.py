@@ -3,6 +3,8 @@ Robots.txt and Sitemap handling module.
 """
 import asyncio
 import aiohttp
+import os
+import re
 from urllib.robotparser import RobotFileParser
 from urllib.parse import urljoin, urlparse
 from xml.etree import ElementTree as ET
@@ -11,15 +13,33 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Try to import google.generativeai, but make it optional
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+    logger.warning("⚠️ google-generativeai not installed. Gemini integration disabled. Install with: pip install google-generativeai")
+
 
 class RobotsChecker:
     """Handle robots.txt parsing and validation."""
     
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, gemini_api_key: Optional[str] = None):
         self.base_url = base_url
         self.robots_url = urljoin(base_url, '/robots.txt')
         self.parser: Optional[RobotFileParser] = None
         self.robots_exists = False
+        self.robots_content: str = ""
+        self.gemini_api_key = gemini_api_key or os.getenv('GEMINI_API_KEY')
+        self.gemini_enabled = GEMINI_AVAILABLE and self.gemini_api_key is not None
+        
+        if self.gemini_enabled:
+            try:
+                genai.configure(api_key=self.gemini_api_key)
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to configure Gemini API: {str(e)}")
+                self.gemini_enabled = False
         
     async def fetch_robots(self, session: aiohttp.ClientSession) -> bool:
         """
@@ -32,18 +52,16 @@ class RobotsChecker:
             True if robots.txt exists and is accessible
         """
         try:
-            logger.info(f"🔍 Checking robots.txt at: {self.robots_url}")
             async with session.get(self.robots_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 if response.status == 200:
                     content = await response.text()
+                    self.robots_content = content
                     self.parser = RobotFileParser()
                     self.parser.set_url(self.robots_url)
                     self.parser.read()
                     self.robots_exists = True
-                    logger.info("✅ robots.txt found and parsed successfully")
                     return True
                 else:
-                    logger.warning(f"⚠️ robots.txt returned status {response.status}")
                     return False
         except Exception as e:
             logger.warning(f"⚠️ Could not fetch robots.txt: {str(e)}")
@@ -70,7 +88,7 @@ class RobotsChecker:
     
     def get_sitemap_urls(self) -> List[str]:
         """
-        Extract sitemap URLs from robots.txt.
+        Extract sitemap URLs from robots.txt using standard parser.
         
         Returns:
             List of sitemap URLs
@@ -82,6 +100,89 @@ class RobotsChecker:
             return list(self.parser.site_maps())
         except Exception:
             return []
+    
+    async def get_sitemap_urls_with_gemini(self) -> List[str]:
+        """
+        Extract sitemap URLs from robots.txt using Gemini 2.5 Flash model.
+        This is more robust and can handle various formats, comments, and edge cases.
+        
+        Returns:
+            List of sitemap URLs extracted by Gemini
+        """
+        if not self.gemini_enabled:
+            logger.warning("⚠️ Gemini not available, falling back to standard parser")
+            return self.get_sitemap_urls()
+        
+        if not self.robots_content:
+            logger.warning("⚠️ No robots.txt content available")
+            return []
+        
+        try:
+            logger.info("🤖 Using Gemini 2.5 Flash to extract sitemap URLs from robots.txt")
+            
+            # Prepare prompt for Gemini
+            prompt = f"""Analyze the following robots.txt file and extract all sitemap URLs.
+
+robots.txt content:
+{self.robots_content}
+
+Instructions:
+1. Find all lines that contain "Sitemap:" (case-insensitive)
+2. Extract the URLs that follow "Sitemap:"
+3. Return ONLY a JSON array of URLs, one per line
+4. Do not include any explanations or additional text
+5. Handle relative URLs by converting them to absolute URLs using the base domain: {self.base_url}
+6. Return empty array [] if no sitemaps found
+
+Example output format:
+["https://example.com/sitemap.xml", "https://example.com/sitemap_index.xml"]
+
+Output:"""
+            
+            # Use Gemini 2.5 Flash model strictly
+            model = genai.GenerativeModel('gemini-2.5-flash')
+            response = model.generate_content(prompt)
+            
+            # Parse response
+            response_text = response.text.strip()
+            
+            # Try to extract JSON array from response
+            # Handle cases where response might have markdown formatting
+            json_match = re.search(r'\[.*?\]', response_text, re.DOTALL)
+            if json_match:
+                import json
+                try:
+                    sitemaps_json = json.loads(json_match.group(0))
+                    sitemap_urls = []
+                    
+                    for url in sitemaps_json:
+                        if isinstance(url, str):
+                            # Ensure absolute URL
+                            if not url.startswith(('http://', 'https://')):
+                                url = urljoin(self.base_url, url.lstrip('/'))
+                            sitemap_urls.append(url)
+                    
+                    logger.info(f"✅ Gemini extracted {len(sitemap_urls)} sitemap URL(s)")
+                    if sitemap_urls:
+                        for idx, url in enumerate(sitemap_urls, 1):
+                            logger.info(f"   {idx}. {url}")
+                    return sitemap_urls
+                except json.JSONDecodeError as e:
+                    logger.warning(f"⚠️ Failed to parse Gemini JSON response: {str(e)}")
+            
+            # Fallback: Try to extract URLs directly from response text
+            url_pattern = r'https?://[^\s,\]]+'
+            urls = re.findall(url_pattern, response_text)
+            if urls:
+                logger.info(f"✅ Gemini extracted {len(urls)} sitemap URL(s) (via regex fallback)")
+                return urls
+            
+            logger.warning("⚠️ Gemini response format unexpected, falling back to standard parser")
+            return self.get_sitemap_urls()
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Error using Gemini for sitemap extraction: {str(e)}, falling back to standard parser")
+            return self.get_sitemap_urls()
 
 
 class SitemapParser:
@@ -95,6 +196,7 @@ class SitemapParser:
     async def discover_sitemaps(self, session: aiohttp.ClientSession, robots_checker: RobotsChecker) -> List[str]:
         """
         Discover sitemap URLs from robots.txt and common locations.
+        Uses Gemini 2.5 Flash to extract from robots.txt if available.
         
         Args:
             session: aiohttp session
@@ -105,8 +207,12 @@ class SitemapParser:
         """
         sitemaps = []
         
-        # Get from robots.txt
-        sitemaps.extend(robots_checker.get_sitemap_urls())
+        # Get from robots.txt using Gemini if available, otherwise use standard parser
+        if robots_checker.gemini_enabled:
+            gemini_sitemaps = await robots_checker.get_sitemap_urls_with_gemini()
+            sitemaps.extend(gemini_sitemaps)
+        else:
+            sitemaps.extend(robots_checker.get_sitemap_urls())
         
         # Try common locations
         common_paths = ['/sitemap.xml', '/sitemap_index.xml', '/sitemap1.xml']
@@ -132,7 +238,6 @@ class SitemapParser:
         urls = set()
         
         try:
-            logger.info(f"📄 Parsing sitemap: {sitemap_url}")
             async with session.get(sitemap_url, timeout=aiohttp.ClientTimeout(total=30)) as response:
                 if response.status == 200:
                     content = await response.text()

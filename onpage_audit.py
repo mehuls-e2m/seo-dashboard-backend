@@ -413,8 +413,6 @@ class OnPageAuditor:
         Returns:
             Dict with all audit results
         """
-        logger.info(f"📝 Performing on-page SEO audit for: {url}")
-        
         results = {
             'url': url,
             'title': self.audit_title(html, url),

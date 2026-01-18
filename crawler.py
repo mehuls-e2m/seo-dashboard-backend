@@ -19,12 +19,13 @@ logger = logging.getLogger(__name__)
 class Crawler:
     """Async web crawler with rate limiting and retry logic."""
     
-    def __init__(self, base_url: str, max_pages: int = 100, max_concurrent: int = 10):
+    def __init__(self, base_url: str, max_pages: int = 100, max_concurrent: int = 10, gemini_api_key: Optional[str] = None):
         self.base_url = normalize_url(base_url)
         self.base_domain = get_domain(self.base_url)
         self.max_pages = max_pages
         self.max_concurrent = max_concurrent
         self.respect_robots = True  # Will be set by crawl() method
+        self.gemini_api_key = gemini_api_key
         
         self.visited: Set[str] = set()
         self.queue: asyncio.Queue = asyncio.Queue()
@@ -51,8 +52,7 @@ class Crawler:
             session: aiohttp session
             respect_robots: If False, will crawl even if blocked by robots.txt (for audit purposes)
         """
-        logger.info("🚀 Initializing crawler...")
-        self.robots_checker = RobotsChecker(self.base_url)
+        self.robots_checker = RobotsChecker(self.base_url, gemini_api_key=self.gemini_api_key)
         await self.robots_checker.fetch_robots(session)
         
         # Add seed URL to queue
@@ -60,16 +60,12 @@ class Crawler:
         
         if can_fetch:
             await self.queue.put(self.base_url)
-            logger.info(f"✅ Seed URL added to queue: {self.base_url}")
         else:
             if respect_robots:
                 logger.error("❌ Seed URL is blocked by robots.txt!")
-                logger.warning("💡 Tip: Some sites block crawlers in robots.txt. For audit purposes, you may want to continue anyway.")
                 raise Exception("Cannot crawl: seed URL blocked by robots.txt")
             else:
-                logger.warning("⚠️ Seed URL is blocked by robots.txt, but continuing anyway (audit mode)")
                 await self.queue.put(self.base_url)
-                logger.info(f"✅ Seed URL added to queue: {self.base_url}")
     
     @retry(
         stop=stop_after_attempt(3),
@@ -89,7 +85,6 @@ class Crawler:
         """
         async with self.limiter:
             try:
-                logger.info(f"🌐 Fetching: {url}")
                 async with session.get(
                     url,
                     timeout=aiohttp.ClientTimeout(total=30),
@@ -121,7 +116,6 @@ class Crawler:
                         'fetch_time': datetime.now().isoformat()
                     }
                     
-                    logger.info(f"✅ Fetched {url} - Status: {response.status}")
                     return result
                     
             except asyncio.TimeoutError:
@@ -185,7 +179,6 @@ class Crawler:
             # Check robots.txt (only if respect_robots is True)
             if self.respect_robots and self.robots_checker and self.robots_checker.parser:
                 if not self.robots_checker.can_fetch(url):
-                    logger.warning(f"🚫 Blocked by robots.txt: {url}")
                     self.stats['blocked_by_robots'] += 1
                     self.queue.task_done()
                     continue
@@ -207,14 +200,13 @@ class Crawler:
                         if link not in self.visited and link not in [q for q in self.queue._queue]:
                             if len(self.visited) + self.queue.qsize() < self.max_pages:
                                 await self.queue.put(link)
-                                logger.debug(f"➕ Added to queue: {link}")
             else:
                 self.stats['failed'] += 1
             
             self.queue.task_done()
             
             # Progress update
-            if self.stats['crawled'] % 10 == 0:
+            if self.stats['crawled'] % 20 == 0:
                 logger.info(f"📈 Progress: {self.stats['crawled']}/{self.max_pages} pages crawled")
     
     async def crawl(self, respect_robots: bool = True) -> Dict[str, Dict]:

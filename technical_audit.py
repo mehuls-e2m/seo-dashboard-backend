@@ -416,8 +416,6 @@ class TechnicalAuditor:
         Returns:
             Dict with all audit results
         """
-        logger.info(f"🔍 Performing technical SEO audit for: {url}")
-        
         results = {
             'url': url,
             'noindex': self.audit_noindex(html, headers),

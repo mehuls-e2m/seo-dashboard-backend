@@ -4,6 +4,7 @@ Output module for generating CSV, JSON, and console reports.
 import json
 import csv
 import pandas as pd
+import re
 from typing import Dict, List, Set
 from datetime import datetime
 import logging
@@ -45,6 +46,813 @@ class OutputGenerator:
             f.write(json_str)
         
         logger.info(f"✅ JSON report saved to: {output_file}")
+        return output_file
+    
+    def generate_stats_json(self, all_results: List[Dict], site_stats: Dict, 
+                           crawlability_info: Dict, duplicate_titles: Dict,
+                           duplicate_descriptions: Dict, duplicate_h1s: Dict,
+                           orphan_pages: Set, output_file: str = None) -> str:
+        """
+        Generate stats-only JSON with final statistics (no detailed issues).
+        
+        Args:
+            all_results: List of audit result dicts
+            site_stats: Site-wide statistics
+            crawlability_info: Robots.txt and sitemap info
+            duplicate_titles: Dict of duplicate titles
+            duplicate_descriptions: Dict of duplicate descriptions
+            duplicate_h1s: Dict of duplicate H1s
+            orphan_pages: Set of orphan page URLs
+            output_file: Optional output file path
+            
+        Returns:
+            JSON file path
+        """
+        if output_file is None:
+            output_file = f"seo_audit_stats_{self.timestamp}.json"
+        
+        total_pages = len(all_results)
+        
+        # Status code distribution
+        status_codes = {}
+        for result in all_results:
+            code = result.get('status_code', 0)
+            status_codes[str(code)] = status_codes.get(str(code), 0) + 1
+        
+        # Technical SEO statistics
+        noindex_pages_count = sum(1 for r in all_results 
+                                  if r.get('technical', {}).get('noindex', {}).get('has_noindex', False))
+        pages_with_canonical = sum(1 for r in all_results 
+                                  if r.get('technical', {}).get('canonical', {}).get('has_canonical', False))
+        pages_with_canonical_issues_count = sum(1 for r in all_results 
+                                              if r.get('technical', {}).get('canonical', {}).get('issues', []))
+        https_pages = sum(1 for r in all_results 
+                         if r.get('technical', {}).get('https', {}).get('is_https', False))
+        mixed_content_pages_count = sum(1 for r in all_results 
+                                       if r.get('technical', {}).get('https', {}).get('mixed_content_count', 0) > 0)
+        pages_with_structured_data = sum(1 for r in all_results 
+                                        if r.get('technical', {}).get('structured_data', {}).get('has_structured_data', False))
+        schema_types = set()
+        for r in all_results:
+            types = r.get('technical', {}).get('structured_data', {}).get('schema_types', [])
+            schema_types.update(types)
+        redirect_issues_count = sum(1 for r in all_results 
+                                    if r.get('technical', {}).get('redirects', {}).get('issues', []))
+        pages_with_meta_robots = sum(1 for r in all_results 
+                                    if r.get('technical', {}).get('meta_robots', {}).get('has_meta_robots', False))
+        
+        # On-page SEO statistics
+        pages_with_title = sum(1 for r in all_results 
+                              if r.get('onpage', {}).get('title', {}).get('has_title', False))
+        pages_with_meta_desc = sum(1 for r in all_results 
+                                  if r.get('onpage', {}).get('meta_description', {}).get('has_meta_description', False))
+        pages_with_h1 = sum(1 for r in all_results 
+                           if r.get('onpage', {}).get('h1', {}).get('h1_count', 0) > 0)
+        pages_without_h1_count = sum(1 for r in all_results 
+                                     if r.get('onpage', {}).get('h1', {}).get('h1_count', 0) == 0)
+        multiple_h1_pages_count = sum(1 for r in all_results 
+                                      if r.get('onpage', {}).get('h1', {}).get('h1_count', 0) > 1)
+        total_images = sum(r.get('onpage', {}).get('image_alt', {}).get('total_images', 0) for r in all_results)
+        images_without_alt = sum(r.get('onpage', {}).get('image_alt', {}).get('images_without_alt', 0) for r in all_results)
+        total_internal_links = sum(r.get('onpage', {}).get('internal_links', {}).get('internal_link_count', 0) for r in all_results)
+        broken_internal_links = sum(r.get('onpage', {}).get('internal_links', {}).get('broken_link_count', 0) for r in all_results)
+        
+        # Build stats-only JSON
+        stats_data = {
+            'site_overview': {
+                'base_url': self.base_url,
+                'timestamp': self.timestamp,
+                'total_crawled_pages': total_pages,
+                'average_seo_score': round(site_stats.get('average_score', 0), 2),
+                'total_issues': site_stats.get('total_issues', 0),
+                'critical_issues_count': site_stats.get('critical_issues', 0),
+                'high_issues_count': site_stats.get('high_issues', 0),
+                'medium_issues_count': site_stats.get('medium_issues', 0),
+                'low_issues_count': site_stats.get('low_issues', 0)
+            },
+            'crawlability': {
+                'robots_txt_exists': crawlability_info.get('robots_txt_exists', False),
+                'sitemap_exists': crawlability_info.get('sitemap_exists', False),
+                'sitemap_urls_from_robots': crawlability_info.get('sitemap_urls_from_robots', []),
+                'sitemap_urls_from_robots_count': len(crawlability_info.get('sitemap_urls_from_robots', [])),
+                'sitemap_urls_count': len(crawlability_info.get('sitemap_urls', []))
+            },
+            'status_code_distribution': status_codes,
+            'technical_seo': {
+                'noindex': {
+                    'pages_with_noindex': noindex_pages_count,
+                    'percentage': round((noindex_pages_count / total_pages * 100), 2) if total_pages > 0 else 0
+                },
+                'meta_robots': {
+                    'pages_with_meta_robots': pages_with_meta_robots,
+                    'percentage': round((pages_with_meta_robots / total_pages * 100), 2) if total_pages > 0 else 0
+                },
+                'canonical_tags': {
+                    'pages_with_canonical': pages_with_canonical,
+                    'pages_with_canonical_issues': pages_with_canonical_issues_count,
+                    'coverage_percentage': round((pages_with_canonical / total_pages * 100), 2) if total_pages > 0 else 0
+                },
+                'redirects': {
+                    'pages_with_redirect_issues': redirect_issues_count,
+                    'percentage': round((redirect_issues_count / total_pages * 100), 2) if total_pages > 0 else 0
+                },
+                'https': {
+                    'https_pages': https_pages,
+                    'coverage_percentage': round((https_pages / total_pages * 100), 2) if total_pages > 0 else 0,
+                    'mixed_content_pages': mixed_content_pages_count,
+                    'mixed_content_percentage': round((mixed_content_pages_count / total_pages * 100), 2) if total_pages > 0 else 0
+                },
+                'structured_data': {
+                    'pages_with_structured_data': pages_with_structured_data,
+                    'coverage_percentage': round((pages_with_structured_data / total_pages * 100), 2) if total_pages > 0 else 0,
+                    'schema_types_found': list(schema_types),
+                    'total_schema_types': len(schema_types)
+                }
+            },
+            'onpage_seo': {
+                'title_tags': {
+                    'pages_with_title': pages_with_title,
+                    'coverage_percentage': round((pages_with_title / total_pages * 100), 2) if total_pages > 0 else 0,
+                    'duplicate_titles_count': len(duplicate_titles)
+                },
+                'meta_descriptions': {
+                    'pages_with_meta_description': pages_with_meta_desc,
+                    'coverage_percentage': round((pages_with_meta_desc / total_pages * 100), 2) if total_pages > 0 else 0,
+                    'duplicate_descriptions_count': len(duplicate_descriptions)
+                },
+                'h1_tags': {
+                    'pages_with_h1': pages_with_h1,
+                    'coverage_percentage': round((pages_with_h1 / total_pages * 100), 2) if total_pages > 0 else 0,
+                    'pages_without_h1': pages_without_h1_count,
+                    'pages_with_multiple_h1': multiple_h1_pages_count,
+                    'duplicate_h1s_count': len(duplicate_h1s)
+                },
+                'image_alt_text': {
+                    'total_images': total_images,
+                    'images_without_alt': images_without_alt,
+                    'compliance_percentage': round(((total_images - images_without_alt) / total_images * 100), 2) if total_images > 0 else 100
+                },
+                'internal_linking': {
+                    'total_internal_links': total_internal_links,
+                    'broken_internal_links': broken_internal_links,
+                    'orphan_pages_count': len(orphan_pages)
+                }
+            }
+        }
+        
+        json_str = json.dumps(stats_data, indent=2, ensure_ascii=False)
+        
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(json_str)
+        
+        logger.info(f"✅ Stats JSON report saved to: {output_file}")
+        return output_file
+    
+    def generate_issues_json(self, all_results: List[Dict], site_stats: Dict, 
+                             crawlability_info: Dict, duplicate_titles: Dict,
+                             duplicate_descriptions: Dict, duplicate_h1s: Dict,
+                             orphan_pages: Set, output_file: str = None) -> str:
+        """
+        Generate detailed issues JSON with all issues and affected pages.
+        
+        Args:
+            all_results: List of audit result dicts
+            site_stats: Site-wide statistics
+            crawlability_info: Robots.txt and sitemap info
+            duplicate_titles: Dict of duplicate titles
+            duplicate_descriptions: Dict of duplicate descriptions
+            duplicate_h1s: Dict of duplicate H1s
+            orphan_pages: Set of orphan page URLs
+            output_file: Optional output file path
+            
+        Returns:
+            JSON file path
+        """
+        if output_file is None:
+            output_file = f"seo_audit_issues_{self.timestamp}.json"
+        
+        # Group issues by type and collect URLs
+        issues_by_type = {}
+        for result in all_results:
+            url = result.get('url', '')
+            issues = result.get('score', {}).get('issues', [])
+            
+            for issue in issues:
+                original_message = issue.get('message', '')
+                normalized_message = self._normalize_issue_message(original_message)
+                
+                issue_key = f"{issue.get('category', 'Unknown')} - {issue.get('type', 'Unknown')} - {normalized_message}"
+                
+                if issue_key not in issues_by_type:
+                    issues_by_type[issue_key] = {
+                        'issue_name': normalized_message,
+                        'category': issue.get('category', 'Unknown'),
+                        'type': issue.get('type', 'Unknown'),
+                        'severity': issue.get('severity', 'low'),
+                        'number_of_issues': 0,
+                        'affected_pages': [],
+                        'links_without_anchor_text': set()
+                    }
+                issues_by_type[issue_key]['number_of_issues'] += 1
+                issues_by_type[issue_key]['affected_pages'].append(url)
+                
+                # Extract link URL from "Link without anchor text: URL" messages
+                if normalized_message == "Link without anchor text" and original_message.startswith("Link without anchor text:"):
+                    link_url = original_message.replace("Link without anchor text:", "").strip()
+                    if link_url:
+                        issues_by_type[issue_key]['links_without_anchor_text'].add(link_url)
+        
+        # Convert to list and sort by severity and count
+        severity_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
+        issues_list = []
+        for issue_key, issue_data in issues_by_type.items():
+            issue_dict = {
+                'issue_name': issue_data['issue_name'],
+                'category': issue_data['category'],
+                'type': issue_data['type'],
+                'severity': issue_data['severity'],
+                'number_of_issues': issue_data['number_of_issues'],
+                'affected_pages_count': len(set(issue_data['affected_pages'])),
+                'affected_pages': list(set(issue_data['affected_pages']))
+            }
+            
+            # For "Link without anchor text" issue, add the links information
+            if issue_data['issue_name'] == "Link without anchor text" and issue_data['links_without_anchor_text']:
+                issue_dict['total_links_without_anchor_text'] = len(issue_data['links_without_anchor_text'])
+                issue_dict['links_without_anchor_text'] = sorted(list(issue_data['links_without_anchor_text']))
+            
+            issues_list.append(issue_dict)
+        
+        issues_list.sort(key=lambda x: (severity_order.get(x['severity'], 4), -x['affected_pages_count']))
+        
+        # Calculate Technical SEO details
+        total_pages = len(all_results)
+        
+        # Technical SEO - Noindex
+        noindex_pages = [r.get('url', '') for r in all_results 
+                        if r.get('technical', {}).get('noindex', {}).get('has_noindex', False)]
+        
+        # Technical SEO - Meta Robots
+        meta_robots_details = []
+        for r in all_results:
+            meta_robots = r.get('technical', {}).get('meta_robots', {})
+            if meta_robots.get('has_meta_robots', False):
+                meta_robots_details.append({
+                    'url': r.get('url', ''),
+                    'meta_content': meta_robots.get('meta_content', ''),
+                    'header_content': meta_robots.get('header_content', '')
+                })
+        
+        # Technical SEO - Canonical
+        canonical_issues_details = []
+        for r in all_results:
+            canonical = r.get('technical', {}).get('canonical', {})
+            if canonical.get('issues', []):
+                canonical_issues_details.append({
+                    'url': r.get('url', ''),
+                    'canonical_url': canonical.get('canonical_url', ''),
+                    'issues': canonical.get('issues', [])
+                })
+        
+        # Technical SEO - Redirects
+        redirect_issues_details = []
+        for r in all_results:
+            redirects = r.get('technical', {}).get('redirects', {})
+            if redirects.get('issues', []):
+                redirect_issues_details.append({
+                    'url': r.get('url', ''),
+                    'status_code': redirects.get('status_code', 0),
+                    'redirect_chain_length': redirects.get('redirect_chain_length', 0),
+                    'issues': redirects.get('issues', [])
+                })
+        
+        # Technical SEO - HTTPS/Mixed Content
+        mixed_content_details = []
+        for r in all_results:
+            https = r.get('technical', {}).get('https', {})
+            if https.get('mixed_content_count', 0) > 0:
+                mixed_content_details.append({
+                    'url': r.get('url', ''),
+                    'mixed_content_count': https.get('mixed_content_count', 0),
+                    'issues': https.get('issues', [])[:5]  # Limit issues
+                })
+        
+        non_https_pages = [r.get('url', '') for r in all_results 
+                          if not r.get('technical', {}).get('https', {}).get('is_https', True)]
+        
+        # Technical SEO - Structured Data
+        structured_data_details = []
+        for r in all_results:
+            structured_data = r.get('technical', {}).get('structured_data', {})
+            if structured_data.get('errors', []):
+                structured_data_details.append({
+                    'url': r.get('url', ''),
+                    'errors': structured_data.get('errors', []),
+                    'schema_types': structured_data.get('schema_types', [])
+                })
+        
+        # On-Page SEO - Title Tags
+        title_issues_details = []
+        for r in all_results:
+            title = r.get('onpage', {}).get('title', {})
+            if title.get('issues', []):
+                title_issues_details.append({
+                    'url': r.get('url', ''),
+                    'title_text': title.get('title_text', ''),
+                    'title_length': title.get('title_length', 0),
+                    'issues': title.get('issues', [])
+                })
+        
+        pages_without_title = [r.get('url', '') for r in all_results 
+                              if not r.get('onpage', {}).get('title', {}).get('has_title', False)]
+        
+        # On-Page SEO - Meta Descriptions
+        meta_desc_issues_details = []
+        for r in all_results:
+            meta_desc = r.get('onpage', {}).get('meta_description', {})
+            if meta_desc.get('issues', []):
+                meta_desc_issues_details.append({
+                    'url': r.get('url', ''),
+                    'description_length': meta_desc.get('description_length', 0),
+                    'issues': meta_desc.get('issues', [])
+                })
+        
+        pages_without_meta_desc = [r.get('url', '') for r in all_results 
+                                  if not r.get('onpage', {}).get('meta_description', {}).get('has_meta_description', False)]
+        
+        # On-Page SEO - H1 Tags
+        h1_issues_details = []
+        for r in all_results:
+            h1 = r.get('onpage', {}).get('h1', {})
+            if h1.get('issues', []):
+                h1_issues_details.append({
+                    'url': r.get('url', ''),
+                    'h1_count': h1.get('h1_count', 0),
+                    'h1_texts': h1.get('h1_texts', []),
+                    'issues': h1.get('issues', [])
+                })
+        
+        pages_without_h1 = [r.get('url', '') for r in all_results 
+                           if r.get('onpage', {}).get('h1', {}).get('h1_count', 0) == 0]
+        multiple_h1_pages = [r.get('url', '') for r in all_results 
+                            if r.get('onpage', {}).get('h1', {}).get('h1_count', 0) > 1]
+        
+        # On-Page SEO - Image Alt Text
+        image_alt_issues_details = []
+        for r in all_results:
+            image_alt = r.get('onpage', {}).get('image_alt', {})
+            if image_alt.get('images_without_alt', 0) > 0:
+                image_alt_issues_details.append({
+                    'url': r.get('url', ''),
+                    'total_images': image_alt.get('total_images', 0),
+                    'images_without_alt': image_alt.get('images_without_alt', 0),
+                    'issues': image_alt.get('issues', [])[:5]
+                })
+        
+        # On-Page SEO - Internal Linking
+        internal_link_issues_details = []
+        for r in all_results:
+            internal_links = r.get('onpage', {}).get('internal_links', {})
+            if internal_links.get('issues', []):
+                internal_link_issues_details.append({
+                    'url': r.get('url', ''),
+                    'internal_link_count': internal_links.get('internal_link_count', 0),
+                    'broken_link_count': internal_links.get('broken_link_count', 0),
+                    'issues': internal_links.get('issues', [])[:5]
+                })
+        
+        # Build detailed issues JSON
+        issues_data = {
+            'site_overview': {
+                'base_url': self.base_url,
+                'timestamp': self.timestamp,
+                'total_crawled_pages': total_pages,
+                'average_seo_score': round(site_stats.get('average_score', 0), 2),
+                'total_issues': site_stats.get('total_issues', 0),
+                'critical_issues_count': site_stats.get('critical_issues', 0),
+                'high_issues_count': site_stats.get('high_issues', 0),
+                'medium_issues_count': site_stats.get('medium_issues', 0),
+                'low_issues_count': site_stats.get('low_issues', 0)
+            },
+            'crawlability': {
+                'robots_txt_exists': crawlability_info.get('robots_txt_exists', False),
+                'sitemap_exists': crawlability_info.get('sitemap_exists', False),
+                'sitemap_urls_from_robots': crawlability_info.get('sitemap_urls_from_robots', []),
+                'sitemap_urls_from_robots_count': len(crawlability_info.get('sitemap_urls_from_robots', []))
+            },
+            'issues_summary': {
+                'total_unique_issue_types': len(issues_list),
+                'issues_by_severity': {
+                    'critical': [i for i in issues_list if i['severity'] == 'critical'],
+                    'high': [i for i in issues_list if i['severity'] == 'high'],
+                    'medium': [i for i in issues_list if i['severity'] == 'medium'],
+                    'low': [i for i in issues_list if i['severity'] == 'low']
+                },
+                'all_issues': issues_list
+            },
+            'technical_seo': {
+                'noindex': {
+                    'pages_with_noindex': {
+                        'count': len(noindex_pages),
+                        'pages': noindex_pages
+                    }
+                },
+                'meta_robots': {
+                    'pages_with_meta_robots': {
+                        'count': len(meta_robots_details),
+                        'details': meta_robots_details
+                    }
+                },
+                'canonical_tags': {
+                    'pages_with_canonical_issues': {
+                        'count': len(canonical_issues_details),
+                        'details': canonical_issues_details
+                    }
+                },
+                'redirects': {
+                    'pages_with_redirect_issues': {
+                        'count': len(redirect_issues_details),
+                        'details': redirect_issues_details
+                    }
+                },
+                'https': {
+                    'non_https_pages': {
+                        'count': len(non_https_pages),
+                        'pages': non_https_pages
+                    },
+                    'mixed_content_pages': {
+                        'count': len(mixed_content_details),
+                        'details': mixed_content_details
+                    }
+                },
+                'structured_data': {
+                    'pages_with_structured_data_errors': {
+                        'count': len(structured_data_details),
+                        'details': structured_data_details
+                    }
+                }
+            },
+            'onpage_seo': {
+                'title_tags': {
+                    'pages_without_title': {
+                        'count': len(pages_without_title),
+                        'pages': pages_without_title
+                    },
+                    'pages_with_title_issues': {
+                        'count': len(title_issues_details),
+                        'details': title_issues_details
+                    },
+                    'duplicate_titles': {
+                        'count': len(duplicate_titles),
+                        'details': [{'title': title, 'pages': urls} for title, urls in duplicate_titles.items()]
+                    }
+                },
+                'meta_descriptions': {
+                    'pages_without_meta_description': {
+                        'count': len(pages_without_meta_desc),
+                        'pages': pages_without_meta_desc
+                    },
+                    'pages_with_meta_description_issues': {
+                        'count': len(meta_desc_issues_details),
+                        'details': meta_desc_issues_details
+                    },
+                    'duplicate_descriptions': {
+                        'count': len(duplicate_descriptions),
+                        'details': [{'description': desc[:100], 'pages': urls} for desc, urls in duplicate_descriptions.items()]
+                    }
+                },
+                'h1_tags': {
+                    'pages_without_h1': {
+                        'count': len(pages_without_h1),
+                        'pages': pages_without_h1
+                    },
+                    'pages_with_multiple_h1': {
+                        'count': len(multiple_h1_pages),
+                        'pages': multiple_h1_pages
+                    },
+                    'pages_with_h1_issues': {
+                        'count': len(h1_issues_details),
+                        'details': h1_issues_details
+                    },
+                    'duplicate_h1s': {
+                        'count': len(duplicate_h1s),
+                        'details': [{'h1_text': h1_text, 'pages': urls} for h1_text, urls in duplicate_h1s.items()]
+                    }
+                },
+                'image_alt_text': {
+                    'pages_with_image_alt_issues': {
+                        'count': len(image_alt_issues_details),
+                        'details': image_alt_issues_details
+                    }
+                },
+                'internal_linking': {
+                    'orphan_pages': {
+                        'count': len(orphan_pages),
+                        'pages': list(orphan_pages)
+                    },
+                    'pages_with_internal_link_issues': {
+                        'count': len(internal_link_issues_details),
+                        'details': internal_link_issues_details
+                    }
+                }
+            }
+        }
+        
+        json_str = json.dumps(issues_data, indent=2, ensure_ascii=False)
+        
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(json_str)
+        
+        logger.info(f"✅ Issues JSON report saved to: {output_file}")
+        return output_file
+    
+    def _normalize_issue_message(self, message: str) -> str:
+        """
+        Normalize issue message to remove dynamic values and counts.
+        
+        Args:
+            message: Original issue message
+            
+        Returns:
+            Normalized issue message
+        """
+        if not message:
+            return message
+        
+        original = message
+        
+        # Normalize "Link without anchor text: URL" to just "Link without anchor text"
+        # "Link without anchor text: https://..." -> "Link without anchor text"
+        if message.startswith("Link without anchor text:"):
+            return "Link without anchor text"
+        
+        # Remove leading numbers from "image(s) missing alt text" pattern
+        # "6 image(s) missing alt text" -> "image(s) missing alt text"
+        # "2 image(s) missing alt text" -> "image(s) missing alt text"
+        message = re.sub(r'^\d+\s+(image\(s\)\s+missing\s+alt\s+text)', r'\1', message, flags=re.IGNORECASE)
+        
+        # Remove character counts from title/description length issues
+        # "Title too short (26 chars, recommended: 30-70)" -> "Title too short"
+        # "Title too long (85 chars, recommended: 30-70)" -> "Title too long"
+        message = re.sub(r'\s*\([^)]*chars[^)]*\)', '', message)
+        message = re.sub(r'\s*,\s*recommended:.*$', '', message)
+        message = re.sub(r'\s*\(recommended:.*?\)', '', message)
+        
+        # Remove numbers from other patterns like "2 resource(s) loaded via HTTP"
+        # "resource(s) loaded via HTTP" -> "resource(s) loaded via HTTP"
+        message = re.sub(r'^\d+\s+(resource\(s\)|script\(s\)|stylesheet\(s\))', r'\1', message, flags=re.IGNORECASE)
+        
+        # Remove any remaining trailing parentheses with numbers/chars/details
+        message = re.sub(r'\s*\([^)]*\)\s*$', '', message)
+        
+        # Clean up extra spaces
+        message = re.sub(r'\s+', ' ', message).strip()
+        
+        # If normalization removed everything, return original
+        if not message:
+            return original
+        
+        return message
+    
+    def generate_site_summary_json(self, all_results: List[Dict], site_stats: Dict, 
+                                   crawlability_info: Dict, duplicate_titles: Dict,
+                                   duplicate_descriptions: Dict, duplicate_h1s: Dict,
+                                   orphan_pages: Set, output_file: str = None) -> str:
+        """
+        Generate overall site audit summary JSON with issues grouped and statistics.
+        
+        Args:
+            all_results: List of audit result dicts
+            site_stats: Site-wide statistics
+            crawlability_info: Robots.txt and sitemap info
+            duplicate_titles: Dict of duplicate titles
+            duplicate_descriptions: Dict of duplicate descriptions
+            duplicate_h1s: Dict of duplicate H1s
+            orphan_pages: Set of orphan page URLs
+            output_file: Optional output file path
+            
+        Returns:
+            JSON file path
+        """
+        if output_file is None:
+            output_file = f"seo_audit_summary_{self.timestamp}.json"
+        
+        # Group issues by type and collect URLs
+        issues_by_type = {}
+        for result in all_results:
+            url = result.get('url', '')
+            issues = result.get('score', {}).get('issues', [])
+            
+            for issue in issues:
+                original_message = issue.get('message', '')
+                normalized_message = self._normalize_issue_message(original_message)
+                
+                # Use normalized message for grouping, but keep original message for display if needed
+                issue_key = f"{issue.get('category', 'Unknown')} - {issue.get('type', 'Unknown')} - {normalized_message}"
+                
+                if issue_key not in issues_by_type:
+                    issues_by_type[issue_key] = {
+                        'issue_name': normalized_message,
+                        'category': issue.get('category', 'Unknown'),
+                        'type': issue.get('type', 'Unknown'),
+                        'severity': issue.get('severity', 'low'),
+                        'number_of_issues': 0,
+                        'affected_pages': [],
+                        'links_without_anchor_text': set()  # Store unique links for "Link without anchor text" issue
+                    }
+                issues_by_type[issue_key]['number_of_issues'] += 1
+                issues_by_type[issue_key]['affected_pages'].append(url)
+                
+                # Extract link URL from "Link without anchor text: URL" messages
+                if normalized_message == "Link without anchor text" and original_message.startswith("Link without anchor text:"):
+                    link_url = original_message.replace("Link without anchor text:", "").strip()
+                    # Note: URL might be truncated (limited to 50 chars in onpage_audit.py)
+                    # We collect what we have - full URLs will need to be checked in detailed reports
+                    if link_url:
+                        issues_by_type[issue_key]['links_without_anchor_text'].add(link_url)
+        
+        # Convert to list and sort by severity and count
+        severity_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
+        issues_list = []
+        for issue_key, issue_data in issues_by_type.items():
+            issue_dict = {
+                'issue_name': issue_data['issue_name'],
+                'category': issue_data['category'],
+                'type': issue_data['type'],
+                'severity': issue_data['severity'],
+                'number_of_issues': issue_data['number_of_issues'],
+                'affected_pages_count': len(set(issue_data['affected_pages'])),  # Use unique pages
+                'affected_pages': list(set(issue_data['affected_pages']))  # Remove duplicates
+            }
+            
+            # For "Link without anchor text" issue, add the links information
+            if issue_data['issue_name'] == "Link without anchor text" and issue_data['links_without_anchor_text']:
+                issue_dict['total_links_without_anchor_text'] = len(issue_data['links_without_anchor_text'])
+                issue_dict['links_without_anchor_text'] = sorted(list(issue_data['links_without_anchor_text']))
+            
+            issues_list.append(issue_dict)
+        
+        issues_list.sort(key=lambda x: (severity_order.get(x['severity'], 4), -x['affected_pages_count']))
+        
+        # Calculate additional statistics
+        total_pages = len(all_results)
+        
+        # Status code distribution
+        status_codes = {}
+        for result in all_results:
+            code = result.get('status_code', 0)
+            status_codes[str(code)] = status_codes.get(str(code), 0) + 1
+        
+        # Technical SEO statistics
+        noindex_pages = [r.get('url', '') for r in all_results 
+                        if r.get('technical', {}).get('noindex', {}).get('has_noindex', False)]
+        pages_with_canonical = sum(1 for r in all_results 
+                                  if r.get('technical', {}).get('canonical', {}).get('has_canonical', False))
+        pages_with_canonical_issues = [r.get('url', '') for r in all_results 
+                                      if r.get('technical', {}).get('canonical', {}).get('issues', [])]
+        
+        https_pages = sum(1 for r in all_results 
+                         if r.get('technical', {}).get('https', {}).get('is_https', False))
+        mixed_content_pages = [r.get('url', '') for r in all_results 
+                              if r.get('technical', {}).get('https', {}).get('mixed_content_count', 0) > 0]
+        
+        pages_with_structured_data = sum(1 for r in all_results 
+                                        if r.get('technical', {}).get('structured_data', {}).get('has_structured_data', False))
+        schema_types = set()
+        for r in all_results:
+            types = r.get('technical', {}).get('structured_data', {}).get('schema_types', [])
+            schema_types.update(types)
+        
+        redirect_issues = [r.get('url', '') for r in all_results 
+                          if r.get('technical', {}).get('redirects', {}).get('issues', [])]
+        
+        # On-page SEO statistics
+        pages_with_title = sum(1 for r in all_results 
+                              if r.get('onpage', {}).get('title', {}).get('has_title', False))
+        pages_with_meta_desc = sum(1 for r in all_results 
+                                  if r.get('onpage', {}).get('meta_description', {}).get('has_meta_description', False))
+        pages_with_h1 = sum(1 for r in all_results 
+                           if r.get('onpage', {}).get('h1', {}).get('h1_count', 0) > 0)
+        pages_without_h1 = [r.get('url', '') for r in all_results 
+                           if r.get('onpage', {}).get('h1', {}).get('h1_count', 0) == 0]
+        multiple_h1_pages = [r.get('url', '') for r in all_results 
+                            if r.get('onpage', {}).get('h1', {}).get('h1_count', 0) > 1]
+        
+        total_images = sum(r.get('onpage', {}).get('image_alt', {}).get('total_images', 0) for r in all_results)
+        images_without_alt = sum(r.get('onpage', {}).get('image_alt', {}).get('images_without_alt', 0) for r in all_results)
+        
+        total_internal_links = sum(r.get('onpage', {}).get('internal_links', {}).get('internal_link_count', 0) for r in all_results)
+        broken_internal_links = sum(r.get('onpage', {}).get('internal_links', {}).get('broken_link_count', 0) for r in all_results)
+        
+        # Build summary JSON
+        summary_data = {
+            'site_overview': {
+                'base_url': self.base_url,
+                'timestamp': self.timestamp,
+                'total_crawled_pages': total_pages,
+                'average_seo_score': site_stats.get('average_score', 0),
+                'total_issues': site_stats.get('total_issues', 0),
+                'critical_issues_count': site_stats.get('critical_issues', 0),
+                'high_issues_count': site_stats.get('high_issues', 0),
+                'medium_issues_count': site_stats.get('medium_issues', 0),
+                'low_issues_count': site_stats.get('low_issues', 0)
+            },
+            'crawlability': {
+                'robots_txt_exists': crawlability_info.get('robots_txt_exists', False),
+                'sitemap_exists': crawlability_info.get('sitemap_exists', False),
+                'sitemap_urls_from_robots': crawlability_info.get('sitemap_urls_from_robots', []),
+                'sitemap_urls_from_robots_count': len(crawlability_info.get('sitemap_urls_from_robots', [])),
+                'sitemap_urls_count': len(crawlability_info.get('sitemap_urls', []))
+            },
+            'status_code_distribution': status_codes,
+            'issues_summary': {
+                'total_unique_issue_types': len(issues_list),
+                'issues_by_severity': {
+                    'critical': [i for i in issues_list if i['severity'] == 'critical'],
+                    'high': [i for i in issues_list if i['severity'] == 'high'],
+                    'medium': [i for i in issues_list if i['severity'] == 'medium'],
+                    'low': [i for i in issues_list if i['severity'] == 'low']
+                },
+                'all_issues': issues_list
+            },
+            'technical_seo_overview': {
+                'noindex_pages': {
+                    'count': len(noindex_pages),
+                    'pages': noindex_pages
+                },
+                'canonical_tags': {
+                    'pages_with_canonical': pages_with_canonical,
+                    'pages_with_canonical_issues': {
+                        'count': len(pages_with_canonical_issues),
+                        'pages': pages_with_canonical_issues
+                    }
+                },
+                'https': {
+                    'https_pages_count': https_pages,
+                    'https_coverage_percentage': round((https_pages / total_pages * 100), 2) if total_pages > 0 else 0,
+                    'mixed_content_pages': {
+                        'count': len(mixed_content_pages),
+                        'pages': mixed_content_pages
+                    }
+                },
+                'structured_data': {
+                    'pages_with_structured_data': pages_with_structured_data,
+                    'coverage_percentage': round((pages_with_structured_data / total_pages * 100), 2) if total_pages > 0 else 0,
+                    'schema_types_found': list(schema_types)
+                },
+                'redirects': {
+                    'pages_with_redirect_issues': {
+                        'count': len(redirect_issues),
+                        'pages': redirect_issues
+                    }
+                }
+            },
+            'onpage_seo_overview': {
+                'title_tags': {
+                    'pages_with_title': pages_with_title,
+                    'coverage_percentage': round((pages_with_title / total_pages * 100), 2) if total_pages > 0 else 0,
+                    'duplicate_titles_count': len(duplicate_titles)
+                },
+                'meta_descriptions': {
+                    'pages_with_meta_description': pages_with_meta_desc,
+                    'coverage_percentage': round((pages_with_meta_desc / total_pages * 100), 2) if total_pages > 0 else 0,
+                    'duplicate_descriptions_count': len(duplicate_descriptions)
+                },
+                'h1_tags': {
+                    'pages_with_h1': pages_with_h1,
+                    'coverage_percentage': round((pages_with_h1 / total_pages * 100), 2) if total_pages > 0 else 0,
+                    'pages_without_h1': {
+                        'count': len(pages_without_h1),
+                        'pages': pages_without_h1
+                    },
+                    'pages_with_multiple_h1': {
+                        'count': len(multiple_h1_pages),
+                        'pages': multiple_h1_pages
+                    },
+                    'duplicate_h1s_count': len(duplicate_h1s)
+                },
+                'image_alt_text': {
+                    'total_images': total_images,
+                    'images_without_alt': images_without_alt,
+                    'compliance_percentage': round(((total_images - images_without_alt) / total_images * 100), 2) if total_images > 0 else 100
+                },
+                'internal_linking': {
+                    'total_internal_links': total_internal_links,
+                    'broken_internal_links': broken_internal_links,
+                    'orphan_pages': {
+                        'count': len(orphan_pages),
+                        'pages': list(orphan_pages)
+                    }
+                }
+            }
+        }
+        
+        json_str = json.dumps(summary_data, indent=2, ensure_ascii=False)
+        
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(json_str)
+        
+        logger.info(f"✅ Site summary JSON report saved to: {output_file}")
         return output_file
     
     def generate_csv(self, all_results: List[Dict], output_file: str = None) -> str:
@@ -374,9 +1182,15 @@ class OutputGenerator:
         sitemap_status = 'good' if crawlability_info.get('sitemap_exists', False) else 'warning'
         sitemap_emoji = self._get_status_emoji(sitemap_status)
         print(f"   {sitemap_emoji} Sitemap: ", end="")
-        if crawlability_info.get('sitemap_exists', False):
+        
+        sitemap_urls_from_robots = crawlability_info.get('sitemap_urls_from_robots', [])
+        if sitemap_urls_from_robots:
+            print(f"✅ Found {len(sitemap_urls_from_robots)} sitemap(s) in robots.txt:")
+            for sitemap_url in sitemap_urls_from_robots:
+                print(f"      • {sitemap_url}")
+        elif crawlability_info.get('sitemap_exists', False):
             sitemap_count = len(crawlability_info.get('sitemap_urls', []))
-            print(f"✅ Found ({sitemap_count} URLs discovered)")
+            print(f"✅ Found ({sitemap_count} URLs discovered from sitemap files)")
         else:
             print("⚠️ Not found or not accessible")
         
