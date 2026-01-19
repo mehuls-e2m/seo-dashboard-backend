@@ -1,0 +1,854 @@
+"""
+Independent output generator for API responses
+"""
+from typing import Dict, List, Set
+from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class APIOutputGenerator:
+    """Generate API-specific output format"""
+    
+    def __init__(self, base_url: str):
+        self.base_url = base_url
+        self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    def generate_audit_stats(
+        self,
+        all_results: List[Dict],
+        site_stats: Dict,
+        crawlability_info: Dict,
+        duplicate_titles: Dict,
+        duplicate_descriptions: Dict,
+        duplicate_h1s: Dict,
+        orphan_pages: Set
+    ) -> Dict:
+        """
+        Generate comprehensive audit statistics with detailed fields.
+        """
+        total_pages = len(all_results)
+        
+        # Status code distribution - Initialize with all important status codes
+        important_status_codes = ['200', '301', '302', '304', '400', '401', '403', '404', '500', '502', '503', '504']
+        status_codes = {code: 0 for code in important_status_codes}
+        
+        # Count actual status codes from results
+        for result in all_results:
+            code = result.get('status_code', 0)
+            code_str = str(code)
+            if code_str in status_codes:
+                status_codes[code_str] += 1
+            else:
+                # Include any other status codes that appear
+                status_codes[code_str] = status_codes.get(code_str, 0) + 1
+        
+        # Technical SEO statistics
+        noindex_pages_count = sum(1 for r in all_results 
+                                  if r.get('technical', {}).get('noindex', {}).get('has_noindex', False))
+        pages_with_canonical = sum(1 for r in all_results 
+                                  if r.get('technical', {}).get('canonical', {}).get('has_canonical', False))
+        pages_with_canonical_issues_count = sum(1 for r in all_results 
+                                              if r.get('technical', {}).get('canonical', {}).get('issues', []))
+        https_pages = sum(1 for r in all_results 
+                         if r.get('technical', {}).get('https', {}).get('is_https', False))
+        mixed_content_pages_count = sum(1 for r in all_results 
+                                       if r.get('technical', {}).get('https', {}).get('mixed_content_count', 0) > 0)
+        pages_with_structured_data = sum(1 for r in all_results 
+                                        if r.get('technical', {}).get('structured_data', {}).get('has_structured_data', False))
+        schema_types = set()
+        for r in all_results:
+            types = r.get('technical', {}).get('structured_data', {}).get('schema_types', [])
+            schema_types.update(types)
+        redirect_issues_count = sum(1 for r in all_results 
+                                    if r.get('technical', {}).get('redirects', {}).get('issues', []))
+        pages_with_meta_robots = sum(1 for r in all_results 
+                                    if r.get('technical', {}).get('meta_robots', {}).get('has_meta_robots', False))
+        
+        # On-page SEO statistics - Detailed
+        pages_with_title = sum(1 for r in all_results 
+                              if r.get('onpage', {}).get('title', {}).get('has_title', False))
+        pages_without_title_tags = total_pages - pages_with_title
+        
+        # Title length issues with actual content
+        title_too_short = 0
+        title_too_short_details = []  # List of {url, title_text, title_length}
+        title_too_long = 0
+        title_too_long_details = []  # List of {url, title_text, title_length}
+        
+        for r in all_results:
+            url = r.get('url', '')
+            title = r.get('onpage', {}).get('title', {})
+            if title.get('has_title', False):
+                title_text = title.get('title_text', '')
+                title_length = title.get('title_length', 0)
+                issues = title.get('issues', [])
+                for issue in issues:
+                    if 'too short' in issue.lower():
+                        title_too_short += 1
+                        title_too_short_details.append({
+                            'url': url,
+                            'title_text': title_text,
+                            'title_length': title_length
+                        })
+                        break
+                    elif 'too long' in issue.lower():
+                        title_too_long += 1
+                        title_too_long_details.append({
+                            'url': url,
+                            'title_text': title_text,
+                            'title_length': title_length
+                        })
+                        break
+        
+        pages_with_meta_desc = sum(1 for r in all_results 
+                                  if r.get('onpage', {}).get('meta_description', {}).get('has_meta_description', False))
+        pages_without_meta_description = total_pages - pages_with_meta_desc
+        
+        # Meta description too short with actual content
+        meta_description_too_short = 0
+        meta_description_too_short_details = []  # List of {url, description_text, description_length}
+        meta_description_too_long = 0
+        meta_description_too_long_details = []  # List of {url, description_text, description_length}
+        
+        for r in all_results:
+            url = r.get('url', '')
+            meta_desc = r.get('onpage', {}).get('meta_description', {})
+            if meta_desc.get('has_meta_description', False):
+                description_text = meta_desc.get('description_text', '')
+                description_length = meta_desc.get('description_length', 0)
+                issues = meta_desc.get('issues', [])
+                for issue in issues:
+                    if 'too short' in issue.lower():
+                        meta_description_too_short += 1
+                        meta_description_too_short_details.append({
+                            'url': url,
+                            'description_text': description_text,
+                            'description_length': description_length
+                        })
+                        break
+                    elif 'too long' in issue.lower():
+                        meta_description_too_long += 1
+                        meta_description_too_long_details.append({
+                            'url': url,
+                            'description_text': description_text,
+                            'description_length': description_length
+                        })
+                        break
+        
+        # H1-H6 counting
+        pages_with_h1 = sum(1 for r in all_results 
+                           if r.get('onpage', {}).get('h1', {}).get('h1_count', 0) > 0)
+        pages_without_h1_count = sum(1 for r in all_results 
+                                     if r.get('onpage', {}).get('h1', {}).get('h1_count', 0) == 0)
+        multiple_h1_pages_count = sum(1 for r in all_results 
+                                      if r.get('onpage', {}).get('h1', {}).get('h1_count', 0) > 1)
+        
+        # Count total H1-H6 tags across all pages
+        # Use headings data if available, otherwise fallback to h1 data
+        total_h1 = 0
+        total_h2 = 0
+        total_h3 = 0
+        total_h4 = 0
+        total_h5 = 0
+        total_h6 = 0
+        
+        for r in all_results:
+            onpage = r.get('onpage', {})
+            headings = onpage.get('headings', {})
+            if headings:
+                # Use headings data if available
+                total_h1 += headings.get('h1_count', 0)
+                total_h2 += headings.get('h2_count', 0)
+                total_h3 += headings.get('h3_count', 0)
+                total_h4 += headings.get('h4_count', 0)
+                total_h5 += headings.get('h5_count', 0)
+                total_h6 += headings.get('h6_count', 0)
+            else:
+                # Fallback to h1 data for backward compatibility
+                h1_data = onpage.get('h1', {})
+                total_h1 += h1_data.get('h1_count', 0)
+        
+        # Calculate averages per page
+        avg_h1_per_page = round(total_h1 / total_pages, 2) if total_pages > 0 else 0
+        avg_h2_per_page = round(total_h2 / total_pages, 2) if total_pages > 0 else 0
+        avg_h3_per_page = round(total_h3 / total_pages, 2) if total_pages > 0 else 0
+        avg_h4_per_page = round(total_h4 / total_pages, 2) if total_pages > 0 else 0
+        avg_h5_per_page = round(total_h5 / total_pages, 2) if total_pages > 0 else 0
+        avg_h6_per_page = round(total_h6 / total_pages, 2) if total_pages > 0 else 0
+        total_images = sum(r.get('onpage', {}).get('image_alt', {}).get('total_images', 0) for r in all_results)
+        images_without_alt = sum(r.get('onpage', {}).get('image_alt', {}).get('images_without_alt', 0) for r in all_results)
+        
+        # Collect all image URLs without alt text (actual image URLs, not webpage URLs)
+        all_images_without_alt_urls = []
+        for r in all_results:
+            image_alt = r.get('onpage', {}).get('image_alt', {})
+            # Use images_without_alt_urls if available, otherwise empty list
+            image_urls = image_alt.get('images_without_alt_urls', [])
+            if image_urls:
+                all_images_without_alt_urls.extend(image_urls)
+        total_internal_links = sum(r.get('onpage', {}).get('internal_links', {}).get('internal_link_count', 0) for r in all_results)
+        broken_internal_links = sum(r.get('onpage', {}).get('internal_links', {}).get('broken_link_count', 0) for r in all_results)
+        
+        # Count links without anchor text (count all links, not just pages)
+        link_without_anchor_tags = 0
+        for r in all_results:
+            # Check internal links issues
+            internal_links = r.get('onpage', {}).get('internal_links', {})
+            issues = internal_links.get('issues', [])
+            for issue in issues:
+                if isinstance(issue, str) and 'Link without anchor text' in issue:
+                    # Extract count if available, otherwise count as 1
+                    link_without_anchor_tags += 1
+            # Also check score issues for link without anchor text
+            score_issues = r.get('score', {}).get('issues', [])
+            for issue in score_issues:
+                message = issue.get('message', '')
+                if 'Link without anchor text' in message:
+                    link_without_anchor_tags += 1
+        
+        # Build comprehensive stats
+        stats_data = {
+            'site_overview': {
+                'base_url': self.base_url,
+                'timestamp': self.timestamp,
+                'total_crawled_pages': total_pages,
+                'average_seo_score': round(site_stats.get('average_score', 0), 2),
+                'total_issues': site_stats.get('total_issues', 0),
+                'critical_issues_count': site_stats.get('critical_issues', 0),
+                'high_issues_count': site_stats.get('high_issues', 0),
+                'medium_issues_count': site_stats.get('medium_issues', 0),
+                'low_issues_count': site_stats.get('low_issues', 0)
+            },
+            'crawlability': {
+                'robots_txt_exists': crawlability_info.get('robots_txt_exists', False),
+                'robots_txt_content': crawlability_info.get('robots_txt_content') if crawlability_info.get('robots_txt_exists', False) else None,
+                'llms_txt_exists': crawlability_info.get('llms_txt_exists', False),
+                'llms_txt_content': crawlability_info.get('llms_txt_content') if crawlability_info.get('llms_txt_exists', False) else None,
+                'sitemap_exists': crawlability_info.get('sitemap_exists', False),
+                'sitemap_urls_from_robots': crawlability_info.get('sitemap_urls_from_robots', []),
+                'sitemap_urls_from_robots_count': len(crawlability_info.get('sitemap_urls_from_robots', [])),
+                'sitemap_urls_count': len(crawlability_info.get('sitemap_urls', []))
+            },
+            'status_code_distribution': status_codes,
+            'technical_seo': {
+                'noindex': {
+                    'pages_with_noindex': noindex_pages_count,
+                    'percentage': round((noindex_pages_count / total_pages * 100), 2) if total_pages > 0 else 0
+                },
+                'meta_robots': {
+                    'pages_with_meta_robots': pages_with_meta_robots,
+                    'percentage': round((pages_with_meta_robots / total_pages * 100), 2) if total_pages > 0 else 0
+                },
+                'canonical_tags': {
+                    'pages_with_canonical': pages_with_canonical,
+                    'pages_with_canonical_issues': pages_with_canonical_issues_count,
+                    'coverage_percentage': round((pages_with_canonical / total_pages * 100), 2) if total_pages > 0 else 0
+                },
+                'redirects': {
+                    'pages_with_redirect_issues': redirect_issues_count,
+                    'percentage': round((redirect_issues_count / total_pages * 100), 2) if total_pages > 0 else 0
+                },
+                'https': {
+                    'https_pages': https_pages,
+                    'coverage_percentage': round((https_pages / total_pages * 100), 2) if total_pages > 0 else 0,
+                    'mixed_content_pages': mixed_content_pages_count,
+                    'mixed_content_percentage': round((mixed_content_pages_count / total_pages * 100), 2) if total_pages > 0 else 0
+                },
+                'structured_data': {
+                    'pages_with_structured_data': pages_with_structured_data,
+                    'coverage_percentage': round((pages_with_structured_data / total_pages * 100), 2) if total_pages > 0 else 0,
+                    'schema_types_found': list(schema_types),
+                    'total_schema_types': len(schema_types)
+                }
+            },
+            'onpage_seo': {
+                'title_tags': {
+                    'pages_with_title': pages_with_title,
+                    'pages_without_title_tags': pages_without_title_tags,
+                    'title_too_short_count': title_too_short,
+                    'title_too_long_count': title_too_long,
+                    'coverage_percentage': round((pages_with_title / total_pages * 100), 2) if total_pages > 0 else 0,
+                    'duplicate_titles_count': len(duplicate_titles)
+                },
+                'meta_descriptions': {
+                    'pages_with_meta_description': pages_with_meta_desc,
+                    'pages_without_meta_description': pages_without_meta_description,
+                    'meta_description_too_short_count': meta_description_too_short,
+                    'meta_description_too_long_count': meta_description_too_long,
+                    'coverage_percentage': round((pages_with_meta_desc / total_pages * 100), 2) if total_pages > 0 else 0,
+                    'duplicate_descriptions_count': len(duplicate_descriptions)
+                },
+                'h1_tags': {
+                    'pages_with_h1': pages_with_h1,
+                    'coverage_percentage': round((pages_with_h1 / total_pages * 100), 2) if total_pages > 0 else 0,
+                    'pages_without_h1': pages_without_h1_count,
+                    'pages_with_multiple_h1': multiple_h1_pages_count,
+                    'duplicate_h1s_count': len(duplicate_h1s)
+                },
+                'headings': {
+                    'total_h1': total_h1,
+                    'total_h2': total_h2,
+                    'total_h3': total_h3,
+                    'total_h4': total_h4,
+                    'total_h5': total_h5,
+                    'total_h6': total_h6,
+                    'avg_h1_per_page': avg_h1_per_page,
+                    'avg_h2_per_page': avg_h2_per_page,
+                    'avg_h3_per_page': avg_h3_per_page,
+                    'avg_h4_per_page': avg_h4_per_page,
+                    'avg_h5_per_page': avg_h5_per_page,
+                    'avg_h6_per_page': avg_h6_per_page
+                },
+                'image_alt_text': {
+                    'total_images': total_images,
+                    'images_without_alt': images_without_alt,
+                    'compliance_percentage': round(((total_images - images_without_alt) / total_images * 100), 2) if total_images > 0 else 100
+                },
+                'internal_linking': {
+                    'total_internal_links': total_internal_links,
+                    'broken_internal_links': broken_internal_links,
+                    'link_without_anchor_tags': link_without_anchor_tags,
+                    'orphan_pages_count': len(orphan_pages)
+                }
+            }
+        }
+        
+        # Extract additional SEO stats and distribute to relevant sections
+        additional_stats = self._extract_additional_seo_stats(all_results)
+        
+        # Add to technical_seo: open_graph, twitter_cards, language_and_encoding
+        stats_data['technical_seo']['open_graph'] = additional_stats.get('open_graph', {})
+        stats_data['technical_seo']['twitter_cards'] = additional_stats.get('twitter_cards', {})
+        stats_data['technical_seo']['language_and_encoding'] = additional_stats.get('language_and_encoding', {})
+        
+        # Add to onpage_seo: external_links, content_analysis
+        stats_data['onpage_seo']['external_links'] = additional_stats.get('external_links', {})
+        stats_data['onpage_seo']['content_analysis'] = additional_stats.get('content_analysis', {})
+        
+        return stats_data
+    
+    def _extract_additional_seo_stats(self, all_results: List[Dict]) -> Dict:
+        """Extract additional SEO statistics (numbers only) for audit_stats."""
+        from bs4 import BeautifulSoup
+        from urllib.parse import urlparse, urljoin
+        import re
+        
+        total_pages = len(all_results)
+        pages_with_og = 0
+        pages_with_twitter = 0
+        total_external_links = 0
+        total_content_length = 0
+        pages_with_lang = 0
+        pages_with_encoding = 0
+        languages = set()
+        encodings = set()
+        external_domains = {}
+        og_tags_found = set()
+        twitter_tags_found = set()
+        
+        for result in all_results:
+            url = result.get('url', '')
+            html = result.get('html_content', '')
+            
+            if not html:
+                continue
+            
+            try:
+                soup = BeautifulSoup(html, 'lxml')
+                base_domain = urlparse(self.base_url).netloc
+                
+                # Check Open Graph tags
+                og_tags = soup.find_all('meta', attrs={'property': re.compile(r'^og:', re.I)})
+                if og_tags:
+                    pages_with_og += 1
+                    for tag in og_tags:
+                        prop = tag.get('property', '').lower()
+                        og_tags_found.add(prop)
+                
+                # Check Twitter Card tags
+                twitter_tags = soup.find_all('meta', attrs={'name': re.compile(r'^twitter:', re.I)})
+                if twitter_tags:
+                    pages_with_twitter += 1
+                    for tag in twitter_tags:
+                        name = tag.get('name', '').lower()
+                        twitter_tags_found.add(name)
+                
+                # Check language
+                html_tag = soup.find('html')
+                if html_tag:
+                    lang = html_tag.get('lang', '')
+                    if lang:
+                        pages_with_lang += 1
+                        languages.add(lang)
+                
+                # Check encoding
+                meta_charset = soup.find('meta', attrs={'charset': True})
+                if meta_charset:
+                    encoding = meta_charset.get('charset', '').lower()
+                    if encoding:
+                        pages_with_encoding += 1
+                        encodings.add(encoding)
+                else:
+                    # Check content-type meta tag
+                    meta_content_type = soup.find('meta', attrs={'http-equiv': re.compile(r'content-type', re.I)})
+                    if meta_content_type:
+                        content = meta_content_type.get('content', '')
+                        charset_match = re.search(r'charset=([^;]+)', content, re.I)
+                        if charset_match:
+                            encoding = charset_match.group(1).strip().lower()
+                            pages_with_encoding += 1
+                            encodings.add(encoding)
+                
+                # Extract external links
+                links = soup.find_all('a', href=True)
+                for link in links:
+                    href = link.get('href', '')
+                    if href:
+                        absolute_url = urljoin(url, href)
+                        parsed = urlparse(absolute_url)
+                        link_domain = parsed.netloc
+                        
+                        if link_domain and link_domain != base_domain:
+                            total_external_links += 1
+                            external_domains[link_domain] = external_domains.get(link_domain, 0) + 1
+                
+                # Calculate content length (text only, excluding scripts/styles)
+                for script in soup(['script', 'style', 'meta', 'link', 'head']):
+                    script.decompose()
+                text_content = soup.get_text()
+                char_count = len(text_content)
+                total_content_length += char_count
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Error extracting additional SEO stats for {url}: {str(e)}")
+                continue
+        
+        avg_content_length = round(total_content_length / total_pages, 0) if total_pages > 0 else 0
+        
+        return {
+            'open_graph': {
+                'pages_with_og_tags': pages_with_og,
+                'pages_without_og_tags': total_pages - pages_with_og,
+                'coverage_percentage': round((pages_with_og / total_pages * 100), 2) if total_pages > 0 else 0,
+                'unique_og_tags_count': len(og_tags_found)
+            },
+            'twitter_cards': {
+                'pages_with_twitter_tags': pages_with_twitter,
+                'pages_without_twitter_tags': total_pages - pages_with_twitter,
+                'coverage_percentage': round((pages_with_twitter / total_pages * 100), 2) if total_pages > 0 else 0,
+                'unique_twitter_tags_count': len(twitter_tags_found)
+            },
+            'external_links': {
+                'total_external_links': total_external_links,
+                'unique_external_domains': len(external_domains),
+                'average_external_links_per_page': round(total_external_links / total_pages, 2) if total_pages > 0 else 0
+            },
+            'content_analysis': {
+                'average_content_length': avg_content_length,
+                'total_content_length': total_content_length
+            },
+            'language_and_encoding': {
+                'pages_with_lang_attribute': pages_with_lang,
+                'unique_languages_count': len(languages),
+                'pages_with_encoding': pages_with_encoding,
+                'unique_encodings_count': len(encodings)
+            }
+        }
+    
+    def generate_audit_issues(
+        self,
+        all_results: List[Dict],
+        site_stats: Dict,
+        crawlability_info: Dict,
+        duplicate_titles: Dict,
+        duplicate_descriptions: Dict,
+        duplicate_h1s: Dict,
+        orphan_pages: Set
+    ) -> Dict:
+        """
+        Generate audit issues (without all_issues and without separated technical_seo/onpage_seo sections).
+        """
+        total_pages = len(all_results)
+        
+        # Group issues by type and collect URLs
+        issues_by_type = {}
+        for result in all_results:
+            url = result.get('url', '')
+            issues = result.get('score', {}).get('issues', [])
+            
+            for issue in issues:
+                original_message = issue.get('message', '')
+                normalized_message = self._normalize_issue_message(original_message)
+                
+                issue_key = f"{issue.get('category', 'Unknown')} - {issue.get('type', 'Unknown')} - {normalized_message}"
+                
+                if issue_key not in issues_by_type:
+                    issues_by_type[issue_key] = {
+                        'issue_name': normalized_message,
+                        'category': issue.get('category', 'Unknown'),
+                        'type': issue.get('type', 'Unknown'),
+                        'severity': issue.get('severity', 'low'),
+                        'number_of_issues': 0,
+                        'affected_pages': [],
+                        'links_without_anchor_text': set()
+                    }
+                issues_by_type[issue_key]['number_of_issues'] += 1
+                issues_by_type[issue_key]['affected_pages'].append(url)
+                
+                # Extract link URL from "Link without anchor text: URL" messages
+                if normalized_message == "Link without anchor text" and original_message.startswith("Link without anchor text:"):
+                    link_url = original_message.replace("Link without anchor text:", "").strip()
+                    if link_url:
+                        issues_by_type[issue_key]['links_without_anchor_text'].add(link_url)
+        
+        # Convert to list and sort by severity and count
+        severity_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
+        issues_list = []
+        for issue_key, issue_data in issues_by_type.items():
+            issue_dict = {
+                'issue_name': issue_data['issue_name'],
+                'category': issue_data['category'],
+                'type': issue_data['type'],
+                'severity': issue_data['severity'],
+                'number_of_issues': issue_data['number_of_issues'],
+                'affected_pages_count': len(set(issue_data['affected_pages'])),
+                'affected_pages': list(set(issue_data['affected_pages']))
+            }
+            
+            # For "Link without anchor text" issue, add the links information
+            if issue_data['issue_name'] == "Link without anchor text" and issue_data['links_without_anchor_text']:
+                issue_dict['total_links_without_anchor_text'] = len(issue_data['links_without_anchor_text'])
+                issue_dict['links_without_anchor_text'] = sorted(list(issue_data['links_without_anchor_text']))
+            
+            issues_list.append(issue_dict)
+        
+        issues_list.sort(key=lambda x: (severity_order.get(x['severity'], 4), -x['affected_pages_count']))
+        
+        # Collect detailed content and attach to relevant issues
+        # Map issue names to their details
+        title_too_short_details = {}
+        title_too_long_details = {}
+        meta_description_too_short_details = {}
+        meta_description_too_long_details = {}
+        images_without_alt_details = {}  # url -> list of image URLs
+        
+        for r in all_results:
+            url = r.get('url', '')
+            # Title details
+            title = r.get('onpage', {}).get('title', {})
+            if title.get('has_title', False):
+                title_text = title.get('title_text', '')
+                title_length = title.get('title_length', 0)
+                issues = title.get('issues', [])
+                for issue in issues:
+                    if 'too short' in issue.lower():
+                        if url not in title_too_short_details:
+                            title_too_short_details[url] = {
+                                'url': url,
+                                'title_text': title_text,
+                                'title_length': title_length
+                            }
+                        break
+                    elif 'too long' in issue.lower():
+                        if url not in title_too_long_details:
+                            title_too_long_details[url] = {
+                                'url': url,
+                                'title_text': title_text,
+                                'title_length': title_length
+                            }
+                        break
+            
+            # Meta description details
+            meta_desc = r.get('onpage', {}).get('meta_description', {})
+            if meta_desc.get('has_meta_description', False):
+                description_text = meta_desc.get('description_text', '')
+                description_length = meta_desc.get('description_length', 0)
+                issues = meta_desc.get('issues', [])
+                for issue in issues:
+                    if 'too short' in issue.lower():
+                        if url not in meta_description_too_short_details:
+                            meta_description_too_short_details[url] = {
+                                'url': url,
+                                'description_text': description_text,
+                                'description_length': description_length
+                            }
+                        break
+                    elif 'too long' in issue.lower():
+                        if url not in meta_description_too_long_details:
+                            meta_description_too_long_details[url] = {
+                                'url': url,
+                                'description_text': description_text,
+                                'description_length': description_length
+                            }
+                        break
+            
+            # Image URLs without alt text
+            image_alt = r.get('onpage', {}).get('image_alt', {})
+            image_urls = image_alt.get('images_without_alt_urls', [])
+            if image_urls:
+                images_without_alt_details[url] = image_urls
+        
+        # Attach details to relevant issues in issues_list
+        for issue_dict in issues_list:
+            issue_name = issue_dict.get('issue_name', '').lower()
+            
+            # Title too short - match variations like "title too short"
+            if 'title' in issue_name and 'too short' in issue_name:
+                details = [title_too_short_details[url] for url in issue_dict['affected_pages'] if url in title_too_short_details]
+                if details:
+                    issue_dict['details'] = details
+                    # Remove affected_pages since details already contain URLs
+                    issue_dict.pop('affected_pages', None)
+            
+            # Title too long - match variations like "title too long"
+            elif 'title' in issue_name and 'too long' in issue_name:
+                details = [title_too_long_details[url] for url in issue_dict['affected_pages'] if url in title_too_long_details]
+                if details:
+                    issue_dict['details'] = details
+                    # Remove affected_pages since details already contain URLs
+                    issue_dict.pop('affected_pages', None)
+            
+            # Meta description too short - match variations
+            elif ('meta description' in issue_name or 'description' in issue_name) and 'too short' in issue_name:
+                details = [meta_description_too_short_details[url] for url in issue_dict['affected_pages'] if url in meta_description_too_short_details]
+                if details:
+                    issue_dict['details'] = details
+                    # Remove affected_pages since details already contain URLs
+                    issue_dict.pop('affected_pages', None)
+            
+            # Meta description too long - match variations
+            elif ('meta description' in issue_name or 'description' in issue_name) and 'too long' in issue_name:
+                details = [meta_description_too_long_details[url] for url in issue_dict['affected_pages'] if url in meta_description_too_long_details]
+                if details:
+                    issue_dict['details'] = details
+                    # Remove affected_pages since details already contain URLs
+                    issue_dict.pop('affected_pages', None)
+            
+            # Images missing alt text - match variations like "image(s) missing alt text"
+            elif 'image' in issue_name and ('missing alt' in issue_name or 'alt' in issue_name):
+                # Collect all image URLs from affected pages
+                all_image_urls = []
+                for url in issue_dict['affected_pages']:
+                    if url in images_without_alt_details:
+                        all_image_urls.extend(images_without_alt_details[url])
+                if all_image_urls:
+                    issue_dict['images_without_alt_urls'] = all_image_urls
+                    # Remove affected_pages since image URLs are provided
+                    issue_dict.pop('affected_pages', None)
+        
+        # Extract additional SEO data
+        additional_seo_data = self._extract_additional_seo_data(all_results)
+        
+        # Build issues data (without all_issues and without separated technical_seo/onpage_seo)
+        issues_data = {
+            'site_overview': {
+                'base_url': self.base_url,
+                'timestamp': self.timestamp,
+                'total_crawled_pages': total_pages,
+                'average_seo_score': round(site_stats.get('average_score', 0), 2),
+                'total_issues': site_stats.get('total_issues', 0),
+                'critical_issues_count': site_stats.get('critical_issues', 0),
+                'high_issues_count': site_stats.get('high_issues', 0),
+                'medium_issues_count': site_stats.get('medium_issues', 0),
+                'low_issues_count': site_stats.get('low_issues', 0)
+            },
+            'crawlability': {
+                'robots_txt_exists': crawlability_info.get('robots_txt_exists', False),
+                'robots_txt_content': crawlability_info.get('robots_txt_content') if crawlability_info.get('robots_txt_exists', False) else None,
+                'llms_txt_exists': crawlability_info.get('llms_txt_exists', False),
+                'llms_txt_content': crawlability_info.get('llms_txt_content') if crawlability_info.get('llms_txt_exists', False) else None,
+                'sitemap_exists': crawlability_info.get('sitemap_exists', False),
+                'sitemap_urls_from_robots': crawlability_info.get('sitemap_urls_from_robots', []),
+                'sitemap_urls_from_robots_count': len(crawlability_info.get('sitemap_urls_from_robots', []))
+            },
+            'issues_summary': {
+                'total_unique_issue_types': len(issues_list),
+                'issues_by_severity': {
+                    'critical': [i for i in issues_list if i['severity'] == 'critical'],
+                    'high': [i for i in issues_list if i['severity'] == 'high'],
+                    'medium': [i for i in issues_list if i['severity'] == 'medium'],
+                    'low': [i for i in issues_list if i['severity'] == 'low']
+                }
+            },
+            **additional_seo_data
+        }
+        
+        return issues_data
+    
+    def _normalize_issue_message(self, message: str) -> str:
+        """Normalize issue message to remove dynamic values."""
+        if not message:
+            return message
+        
+        import re
+        original = message
+        
+        # Normalize "Link without anchor text: URL" to just "Link without anchor text"
+        if message.startswith("Link without anchor text:"):
+            return "Link without anchor text"
+        
+        # Normalize "Canonical points to different URL: <URL>" to just "Canonical points to different URL"
+        if message.startswith("Canonical points to different URL:"):
+            return "Canonical points to different URL"
+        
+        # Remove leading numbers from "image(s) missing alt text" pattern
+        message = re.sub(r'^\d+\s+(image\(s\)\s+missing\s+alt\s+text)', r'\1', message, flags=re.IGNORECASE)
+        
+        # Remove character counts from title/description length issues
+        message = re.sub(r'\s*\([^)]*chars[^)]*\)', '', message)
+        message = re.sub(r'\s*,\s*recommended:.*$', '', message)
+        message = re.sub(r'\s*\(recommended:.*?\)', '', message)
+        
+        # Remove numbers from other patterns
+        message = re.sub(r'^\d+\s+(resource\(s\)|script\(s\)|stylesheet\(s\))', r'\1', message, flags=re.IGNORECASE)
+        
+        # Remove any remaining trailing parentheses with numbers/chars/details
+        message = re.sub(r'\s*\([^)]*\)\s*$', '', message)
+        
+        # Clean up extra spaces
+        message = re.sub(r'\s+', ' ', message).strip()
+        
+        # If normalization removed everything, return original
+        if not message:
+            return original
+        
+        return message
+    
+    def _extract_additional_seo_data(self, all_results: List[Dict]) -> Dict:
+        """Extract additional SEO data: Open Graph, Twitter Cards, external links, content analysis, etc."""
+        from bs4 import BeautifulSoup
+        from urllib.parse import urlparse, urljoin
+        import re
+        
+        total_pages = len(all_results)
+        pages_with_og = 0
+        pages_with_twitter = 0
+        total_external_links = 0
+        total_content_length = 0
+        pages_with_lang = 0
+        pages_with_encoding = 0
+        languages = set()
+        encodings = set()
+        external_domains = {}
+        og_tags_found = set()
+        twitter_tags_found = set()
+        pages_without_og = []
+        pages_without_twitter = []
+        
+        for result in all_results:
+            url = result.get('url', '')
+            html = result.get('html_content', '')
+            
+            if not html:
+                continue
+            
+            try:
+                soup = BeautifulSoup(html, 'lxml')
+                base_domain = urlparse(self.base_url).netloc
+                
+                # Check Open Graph tags
+                og_tags = soup.find_all('meta', attrs={'property': re.compile(r'^og:', re.I)})
+                if og_tags:
+                    pages_with_og += 1
+                    for tag in og_tags:
+                        prop = tag.get('property', '').lower()
+                        og_tags_found.add(prop)
+                else:
+                    pages_without_og.append(url)
+                
+                # Check Twitter Card tags
+                twitter_tags = soup.find_all('meta', attrs={'name': re.compile(r'^twitter:', re.I)})
+                if twitter_tags:
+                    pages_with_twitter += 1
+                    for tag in twitter_tags:
+                        name = tag.get('name', '').lower()
+                        twitter_tags_found.add(name)
+                else:
+                    pages_without_twitter.append(url)
+                
+                # Check language
+                html_tag = soup.find('html')
+                if html_tag:
+                    lang = html_tag.get('lang', '')
+                    if lang:
+                        pages_with_lang += 1
+                        languages.add(lang)
+                
+                # Check encoding
+                meta_charset = soup.find('meta', attrs={'charset': True})
+                if meta_charset:
+                    encoding = meta_charset.get('charset', '').lower()
+                    if encoding:
+                        pages_with_encoding += 1
+                        encodings.add(encoding)
+                else:
+                    # Check content-type meta tag
+                    meta_content_type = soup.find('meta', attrs={'http-equiv': re.compile(r'content-type', re.I)})
+                    if meta_content_type:
+                        content = meta_content_type.get('content', '')
+                        charset_match = re.search(r'charset=([^;]+)', content, re.I)
+                        if charset_match:
+                            encoding = charset_match.group(1).strip().lower()
+                            pages_with_encoding += 1
+                            encodings.add(encoding)
+                
+                # Extract external links
+                links = soup.find_all('a', href=True)
+                for link in links:
+                    href = link.get('href', '')
+                    if href:
+                        absolute_url = urljoin(url, href)
+                        parsed = urlparse(absolute_url)
+                        link_domain = parsed.netloc
+                        
+                        if link_domain and link_domain != base_domain:
+                            total_external_links += 1
+                            external_domains[link_domain] = external_domains.get(link_domain, 0) + 1
+                
+                # Calculate content length (text only, excluding scripts/styles)
+                for script in soup(['script', 'style', 'meta', 'link', 'head']):
+                    script.decompose()
+                text_content = soup.get_text()
+                char_count = len(text_content)
+                total_content_length += char_count
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Error extracting additional SEO data for {url}: {str(e)}")
+                continue
+        
+        avg_content_length = round(total_content_length / total_pages, 0) if total_pages > 0 else 0
+        
+        return {
+            'open_graph': {
+                'pages_with_og_tags': pages_with_og,
+                'pages_without_og_tags': len(pages_without_og),
+                'coverage_percentage': round((pages_with_og / total_pages * 100), 2) if total_pages > 0 else 0,
+                'og_tags_found': sorted(list(og_tags_found)),
+                'pages_missing_og': pages_without_og[:20]  # Limit to first 20
+            },
+            'twitter_cards': {
+                'pages_with_twitter_tags': pages_with_twitter,
+                'pages_without_twitter_tags': len(pages_without_twitter),
+                'coverage_percentage': round((pages_with_twitter / total_pages * 100), 2) if total_pages > 0 else 0,
+                'twitter_tags_found': sorted(list(twitter_tags_found)),
+                'pages_missing_twitter': pages_without_twitter[:20]  # Limit to first 20
+            },
+            'external_links': {
+                'total_external_links': total_external_links,
+                'unique_external_domains': len(external_domains),
+                'top_external_domains': sorted(external_domains.items(), key=lambda x: x[1], reverse=True)[:10]
+            },
+            'content_analysis': {
+                'average_content_length': avg_content_length,
+                'total_content_length': total_content_length
+            },
+            'language_and_encoding': {
+                'pages_with_lang_attribute': pages_with_lang,
+                'languages_found': sorted(list(languages)),
+                'pages_with_encoding': pages_with_encoding,
+                'encodings_found': sorted(list(encodings))
+            }
+        }
+

@@ -28,9 +28,12 @@ class RobotsChecker:
     def __init__(self, base_url: str, gemini_api_key: Optional[str] = None):
         self.base_url = base_url
         self.robots_url = urljoin(base_url, '/robots.txt')
+        self.llms_url = urljoin(base_url, '/llms.txt')
         self.parser: Optional[RobotFileParser] = None
         self.robots_exists = False
         self.robots_content: str = ""
+        self.llms_exists = False
+        self.llms_content: str = ""
         self.gemini_api_key = gemini_api_key or os.getenv('GEMINI_API_KEY')
         self.gemini_enabled = GEMINI_AVAILABLE and self.gemini_api_key is not None
         
@@ -67,6 +70,30 @@ class RobotsChecker:
             logger.warning(f"⚠️ Could not fetch robots.txt: {str(e)}")
             return False
     
+    async def fetch_llms(self, session: aiohttp.ClientSession) -> bool:
+        """
+        Fetch llms.txt file.
+        
+        Args:
+            session: aiohttp session
+            
+        Returns:
+            True if llms.txt exists and is accessible
+        """
+        try:
+            async with session.get(self.llms_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status == 200:
+                    content = await response.text()
+                    self.llms_content = content
+                    self.llms_exists = True
+                    logger.info("✅ Found llms.txt")
+                    return True
+                else:
+                    return False
+        except Exception as e:
+            logger.debug(f"llms.txt not found or not accessible: {str(e)}")
+            return False
+    
     def can_fetch(self, url: str, user_agent: str = '*') -> bool:
         """
         Check if a URL can be fetched according to robots.txt.
@@ -89,17 +116,46 @@ class RobotsChecker:
     def get_sitemap_urls(self) -> List[str]:
         """
         Extract sitemap URLs from robots.txt using standard parser.
+        Falls back to manual parsing if parser fails.
         
         Returns:
             List of sitemap URLs
         """
-        if not self.parser:
-            return []
+        sitemap_urls = []
         
-        try:
-            return list(self.parser.site_maps())
-        except Exception:
-            return []
+        # Try standard parser first
+        if self.parser:
+            try:
+                sitemap_urls = list(self.parser.site_maps())
+                if sitemap_urls:
+                    logger.info(f"✅ Standard parser extracted {len(sitemap_urls)} sitemap URL(s) from robots.txt")
+                    return sitemap_urls
+            except Exception as e:
+                logger.debug(f"Standard parser failed: {str(e)}, trying manual parsing")
+        
+        # Fallback: Manual parsing from robots_content
+        if self.robots_content:
+            try:
+                # Look for Sitemap: lines (case-insensitive)
+                sitemap_pattern = re.compile(r'^sitemap:\s*(.+)$', re.IGNORECASE | re.MULTILINE)
+                matches = sitemap_pattern.findall(self.robots_content)
+                
+                for match in matches:
+                    url = match.strip()
+                    # Make absolute URL if relative
+                    if url and not url.startswith(('http://', 'https://')):
+                        url = urljoin(self.base_url, url.lstrip('/'))
+                    if url:
+                        sitemap_urls.append(url)
+                
+                if sitemap_urls:
+                    logger.info(f"✅ Manual parser extracted {len(sitemap_urls)} sitemap URL(s) from robots.txt")
+                    for idx, url in enumerate(sitemap_urls, 1):
+                        logger.info(f"   {idx}. {url}")
+            except Exception as e:
+                logger.warning(f"⚠️ Manual sitemap parsing failed: {str(e)}")
+        
+        return sitemap_urls
     
     async def get_sitemap_urls_with_gemini(self) -> List[str]:
         """

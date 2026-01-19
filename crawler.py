@@ -46,7 +46,7 @@ class Crawler:
     
     async def initialize(self, session: aiohttp.ClientSession, respect_robots: bool = True):
         """
-        Initialize crawler with robots.txt check.
+        Initialize crawler with robots.txt and llms.txt check.
         
         Args:
             session: aiohttp session
@@ -54,6 +54,7 @@ class Crawler:
         """
         self.robots_checker = RobotsChecker(self.base_url, gemini_api_key=self.gemini_api_key)
         await self.robots_checker.fetch_robots(session)
+        await self.robots_checker.fetch_llms(session)
         
         # Add seed URL to queue
         can_fetch = self.robots_checker.can_fetch(self.base_url) if self.robots_checker.parser else True

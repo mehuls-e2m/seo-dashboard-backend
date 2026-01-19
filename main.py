@@ -97,6 +97,10 @@ async def main():
         if crawler.robots_checker:
             crawlability_info['robots_txt_exists'] = crawler.robots_checker.robots_exists
             
+            # Include robots.txt content if it exists
+            if crawler.robots_checker.robots_exists:
+                crawlability_info['robots_txt_content'] = crawler.robots_checker.robots_content
+            
             # Extract sitemap URLs from robots.txt
             if crawler.robots_checker.gemini_enabled:
                 sitemap_urls_from_robots = await crawler.robots_checker.get_sitemap_urls_with_gemini()
