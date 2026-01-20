@@ -87,7 +87,10 @@ class AuditService:
         crawlability_info = {
             'robots_txt_exists': False,
             'sitemap_exists': False,
-            'sitemap_urls': []
+            'sitemap_urls': [],
+            'all_sitemap_urls': [],  # All discovered sitemap URLs (whether accessible or not)
+            'accessed_sitemap_urls': [],
+            'total_sitemap_links_count': 0
         }
         
         try:
@@ -130,14 +133,25 @@ class AuditService:
                 try:
                     async with aiohttp.ClientSession() as session:
                         sitemap_parser = SitemapParser(base_url)
-                        sitemap_urls = await sitemap_parser.get_all_sitemap_urls(session, crawler.robots_checker)
-                        logger.info(f"📊 Extracted {len(sitemap_urls)} URLs from sitemap files")
+                        sitemap_result = await sitemap_parser.get_all_sitemap_urls(session, crawler.robots_checker)
+                        sitemap_urls = sitemap_result['urls']  # URLs extracted from sitemaps
+                        all_sitemap_urls = sitemap_result['all_sitemap_urls']  # All discovered sitemap URLs
+                        accessed_sitemap_urls = sitemap_result['accessed_sitemap_urls']  # All accessed sitemap URLs
+                        total_links_count = sitemap_result['total_links_count']  # Total number of links
+                        
+                        logger.info(f"📊 Extracted {total_links_count} URLs from {len(accessed_sitemap_urls)} accessible sitemap file(s) out of {len(all_sitemap_urls)} found")
                         crawlability_info['sitemap_exists'] = len(sitemap_urls) > 0 or len(sitemap_urls_from_robots) > 0
                         crawlability_info['sitemap_urls'] = list(sitemap_urls)[:10]  # Limit to first 10 (URLs from within sitemaps)
-                        logger.info(f"✅ Sitemap detection complete: exists={crawlability_info['sitemap_exists']}, from_robots={len(sitemap_urls_from_robots)}, from_files={len(sitemap_urls)}")
+                        crawlability_info['all_sitemap_urls'] = all_sitemap_urls  # All discovered sitemap URLs (whether accessible or not)
+                        crawlability_info['accessed_sitemap_urls'] = accessed_sitemap_urls  # All accessed sitemap URLs
+                        crawlability_info['total_sitemap_links_count'] = total_links_count  # Total links from all sitemaps
+                        logger.info(f"✅ Sitemap detection complete: exists={crawlability_info['sitemap_exists']}, from_robots={len(sitemap_urls_from_robots)}, all_found={len(all_sitemap_urls)}, accessed={len(accessed_sitemap_urls)}, total_links={total_links_count}")
                 except Exception as e:
                     logger.warning(f"⚠️ Could not check sitemap: {str(e)}", exc_info=True)
                     crawlability_info['sitemap_exists'] = len(sitemap_urls_from_robots) > 0
+                    crawlability_info['all_sitemap_urls'] = sitemap_urls_from_robots  # Use robots.txt sitemaps as fallback
+                    crawlability_info['accessed_sitemap_urls'] = []
+                    crawlability_info['total_sitemap_links_count'] = 0
                     logger.info(f"⚠️ Sitemap detection fallback: exists={crawlability_info['sitemap_exists']} (based on robots.txt only)")
             
             # Step 2: Perform audits

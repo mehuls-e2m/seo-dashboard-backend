@@ -226,10 +226,9 @@ class APIOutputGenerator:
                 'robots_txt_content': crawlability_info.get('robots_txt_content') if crawlability_info.get('robots_txt_exists', False) else None,
                 'llms_txt_exists': crawlability_info.get('llms_txt_exists', False),
                 'llms_txt_content': crawlability_info.get('llms_txt_content') if crawlability_info.get('llms_txt_exists', False) else None,
-                'sitemap_exists': crawlability_info.get('sitemap_exists', False),
-                'sitemap_urls_from_robots': crawlability_info.get('sitemap_urls_from_robots', []),
-                'sitemap_urls_from_robots_count': len(crawlability_info.get('sitemap_urls_from_robots', [])),
-                'sitemap_urls_count': len(crawlability_info.get('sitemap_urls', []))
+                'sitemap_exists': len(crawlability_info.get('all_sitemap_urls', [])) > 0,
+                'all_sitemap_urls': crawlability_info.get('all_sitemap_urls', []),
+                'total_sitemap_links_count': crawlability_info.get('total_sitemap_links_count', 0)
             },
             'status_code_distribution': status_codes,
             'technical_seo': {
@@ -659,9 +658,9 @@ class APIOutputGenerator:
                 'robots_txt_content': crawlability_info.get('robots_txt_content') if crawlability_info.get('robots_txt_exists', False) else None,
                 'llms_txt_exists': crawlability_info.get('llms_txt_exists', False),
                 'llms_txt_content': crawlability_info.get('llms_txt_content') if crawlability_info.get('llms_txt_exists', False) else None,
-                'sitemap_exists': crawlability_info.get('sitemap_exists', False),
-                'sitemap_urls_from_robots': crawlability_info.get('sitemap_urls_from_robots', []),
-                'sitemap_urls_from_robots_count': len(crawlability_info.get('sitemap_urls_from_robots', []))
+                'sitemap_exists': len(crawlability_info.get('all_sitemap_urls', [])) > 0,
+                'all_sitemap_urls': crawlability_info.get('all_sitemap_urls', []),
+                'total_sitemap_links_count': crawlability_info.get('total_sitemap_links_count', 0)
             },
             'issues_summary': {
                 'total_unique_issue_types': len(issues_list),

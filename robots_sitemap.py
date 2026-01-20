@@ -46,7 +46,7 @@ class RobotsChecker:
         
     async def fetch_robots(self, session: aiohttp.ClientSession) -> bool:
         """
-        Fetch and parse robots.txt.
+        Fetch and parse robots.txt and llms.txt.
         
         Args:
             session: aiohttp session
@@ -54,8 +54,17 @@ class RobotsChecker:
         Returns:
             True if robots.txt exists and is accessible
         """
+        robots_fetched = False
+        headers = {
+            'User-Agent': 'SEO-Audit-Bot/1.0 (Technical SEO Audit Tool)',
+            'Accept': 'text/plain, */*'
+        }
         try:
-            async with session.get(self.robots_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+            async with session.get(
+                self.robots_url,
+                timeout=aiohttp.ClientTimeout(total=10),
+                headers=headers
+            ) as response:
                 if response.status == 200:
                     content = await response.text()
                     self.robots_content = content
@@ -63,36 +72,27 @@ class RobotsChecker:
                     self.parser.set_url(self.robots_url)
                     self.parser.read()
                     self.robots_exists = True
-                    return True
-                else:
-                    return False
+                    robots_fetched = True
         except Exception as e:
             logger.warning(f"⚠️ Could not fetch robots.txt: {str(e)}")
-            return False
-    
-    async def fetch_llms(self, session: aiohttp.ClientSession) -> bool:
-        """
-        Fetch llms.txt file.
         
-        Args:
-            session: aiohttp session
-            
-        Returns:
-            True if llms.txt exists and is accessible
-        """
+        # Also check for llms.txt
         try:
-            async with session.get(self.llms_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+            async with session.get(
+                self.llms_url,
+                timeout=aiohttp.ClientTimeout(total=10),
+                headers=headers
+            ) as response:
                 if response.status == 200:
                     content = await response.text()
                     self.llms_content = content
                     self.llms_exists = True
                     logger.info("✅ Found llms.txt")
-                    return True
-                else:
-                    return False
         except Exception as e:
-            logger.debug(f"llms.txt not found or not accessible: {str(e)}")
-            return False
+            # llms.txt is optional, so we don't log a warning
+            pass
+        
+        return robots_fetched
     
     def can_fetch(self, url: str, user_agent: str = '*') -> bool:
         """
@@ -116,46 +116,17 @@ class RobotsChecker:
     def get_sitemap_urls(self) -> List[str]:
         """
         Extract sitemap URLs from robots.txt using standard parser.
-        Falls back to manual parsing if parser fails.
         
         Returns:
             List of sitemap URLs
         """
-        sitemap_urls = []
+        if not self.parser:
+            return []
         
-        # Try standard parser first
-        if self.parser:
-            try:
-                sitemap_urls = list(self.parser.site_maps())
-                if sitemap_urls:
-                    logger.info(f"✅ Standard parser extracted {len(sitemap_urls)} sitemap URL(s) from robots.txt")
-                    return sitemap_urls
-            except Exception as e:
-                logger.debug(f"Standard parser failed: {str(e)}, trying manual parsing")
-        
-        # Fallback: Manual parsing from robots_content
-        if self.robots_content:
-            try:
-                # Look for Sitemap: lines (case-insensitive)
-                sitemap_pattern = re.compile(r'^sitemap:\s*(.+)$', re.IGNORECASE | re.MULTILINE)
-                matches = sitemap_pattern.findall(self.robots_content)
-                
-                for match in matches:
-                    url = match.strip()
-                    # Make absolute URL if relative
-                    if url and not url.startswith(('http://', 'https://')):
-                        url = urljoin(self.base_url, url.lstrip('/'))
-                    if url:
-                        sitemap_urls.append(url)
-                
-                if sitemap_urls:
-                    logger.info(f"✅ Manual parser extracted {len(sitemap_urls)} sitemap URL(s) from robots.txt")
-                    for idx, url in enumerate(sitemap_urls, 1):
-                        logger.info(f"   {idx}. {url}")
-            except Exception as e:
-                logger.warning(f"⚠️ Manual sitemap parsing failed: {str(e)}")
-        
-        return sitemap_urls
+        try:
+            return list(self.parser.site_maps())
+        except Exception:
+            return []
     
     async def get_sitemap_urls_with_gemini(self) -> List[str]:
         """
@@ -248,18 +219,19 @@ class SitemapParser:
         self.base_url = base_url
         self.sitemap_urls: List[str] = []
         self.discovered_urls: Set[str] = set()
+        self.accessed_sitemap_urls: List[str] = []  # Track all successfully accessed sitemap URLs
+        self.all_found_sitemap_urls: List[str] = []  # Track all sitemap URLs found (from robots.txt + nested ones)
         
-    async def discover_sitemaps(self, session: aiohttp.ClientSession, robots_checker: RobotsChecker) -> List[str]:
+    async def discover_sitemaps_from_robots(self, robots_checker: RobotsChecker) -> List[str]:
         """
-        Discover sitemap URLs from robots.txt and common locations.
+        Discover sitemap URLs from robots.txt only.
         Uses Gemini 2.5 Flash to extract from robots.txt if available.
         
         Args:
-            session: aiohttp session
             robots_checker: RobotsChecker instance
             
         Returns:
-            List of sitemap URLs
+            List of sitemap URLs from robots.txt
         """
         sitemaps = []
         
@@ -270,19 +242,14 @@ class SitemapParser:
         else:
             sitemaps.extend(robots_checker.get_sitemap_urls())
         
-        # Try common locations
-        common_paths = ['/sitemap.xml', '/sitemap_index.xml', '/sitemap1.xml']
-        for path in common_paths:
-            sitemap_url = urljoin(self.base_url, path)
-            sitemaps.append(sitemap_url)
-        
         self.sitemap_urls = list(set(sitemaps))
-        logger.info(f"📋 Found {len(self.sitemap_urls)} potential sitemap(s)")
+        logger.info(f"📋 Found {len(self.sitemap_urls)} sitemap URL(s) from robots.txt")
         return self.sitemap_urls
     
     async def parse_sitemap(self, session: aiohttp.ClientSession, sitemap_url: str) -> Set[str]:
         """
         Parse a sitemap XML and extract URLs.
+        Tracks successfully accessed sitemap URLs and discovers nested sitemap URLs from sitemap indexes.
         
         Args:
             session: aiohttp session
@@ -294,19 +261,44 @@ class SitemapParser:
         urls = set()
         
         try:
-            async with session.get(sitemap_url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+            async with session.get(
+                sitemap_url,
+                timeout=aiohttp.ClientTimeout(total=30),
+                headers={
+                    'User-Agent': 'SEO-Audit-Bot/1.0 (Technical SEO Audit Tool)',
+                    'Accept': 'application/xml, text/xml, */*',
+                    'Accept-Language': 'en-US,en;q=0.9'
+                }
+            ) as response:
                 if response.status == 200:
+                    # Track this sitemap as successfully accessed
+                    if sitemap_url not in self.accessed_sitemap_urls:
+                        self.accessed_sitemap_urls.append(sitemap_url)
+                    
+                    # Track all found sitemap URLs
+                    if sitemap_url not in self.all_found_sitemap_urls:
+                        self.all_found_sitemap_urls.append(sitemap_url)
+                    
                     content = await response.text()
                     root = ET.fromstring(content)
                     
                     # Handle sitemap index
                     if root.tag.endswith('sitemapindex'):
                         sitemap_locs = root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}loc')
+                        nested_sitemap_urls = []
                         for loc in sitemap_locs:
                             if loc.text:
+                                nested_sitemap_url = loc.text.strip()
+                                nested_sitemap_urls.append(nested_sitemap_url)
+                                # Track nested sitemap URLs found
+                                if nested_sitemap_url not in self.all_found_sitemap_urls:
+                                    self.all_found_sitemap_urls.append(nested_sitemap_url)
                                 # Recursively parse nested sitemaps
-                                nested_urls = await self.parse_sitemap(session, loc.text.strip())
+                                nested_urls = await self.parse_sitemap(session, nested_sitemap_url)
                                 urls.update(nested_urls)
+                        
+                        if nested_sitemap_urls:
+                            logger.info(f"📋 Found {len(nested_sitemap_urls)} nested sitemap(s) in {sitemap_url}")
                     
                     # Handle regular sitemap
                     elif root.tag.endswith('urlset'):
@@ -325,26 +317,63 @@ class SitemapParser:
         
         return urls
     
-    async def get_all_sitemap_urls(self, session: aiohttp.ClientSession, robots_checker: RobotsChecker) -> Set[str]:
+    async def get_all_sitemap_urls(self, session: aiohttp.ClientSession, robots_checker: RobotsChecker) -> Dict:
         """
-        Get all URLs from all discovered sitemaps.
+        Get all URLs from sitemaps following the flow:
+        1. First, find sitemap URLs from robots.txt using Gemini (or standard parser)
+        2. Then visit those sitemaps and retrieve all nested sitemap URLs from sitemap indexes
+        3. Collect all sitemap URLs found (from robots.txt + all nested ones discovered)
         
         Args:
             session: aiohttp session
             robots_checker: RobotsChecker instance
             
         Returns:
-            Set of all URLs from sitemaps
+            Dictionary with:
+            - 'urls': Set of all URLs from sitemaps
+            - 'all_sitemap_urls': List of all sitemap URLs found (from robots.txt + all nested ones)
+            - 'accessed_sitemap_urls': List of all successfully accessed sitemap URLs (including nested ones)
+            - 'total_links_count': Total number of links found in all sitemaps
         """
-        sitemaps = await self.discover_sitemaps(session, robots_checker)
+        # Reset tracking lists for this run
+        self.accessed_sitemap_urls = []
+        self.all_found_sitemap_urls = []
+        
+        # Step 1: Get sitemap URLs from robots.txt using Gemini (or standard parser)
+        logger.info("🔍 Step 1: Extracting sitemap URLs from robots.txt...")
+        robots_sitemaps = await self.discover_sitemaps_from_robots(robots_checker)
+        
+        if not robots_sitemaps:
+            logger.warning("⚠️ No sitemap URLs found in robots.txt")
+            return {
+                'urls': set(),
+                'all_sitemap_urls': [],
+                'accessed_sitemap_urls': [],
+                'total_links_count': 0
+            }
+        
+        # Step 2: Visit each sitemap from robots.txt and extract URLs (including nested sitemaps)
+        logger.info(f"🔍 Step 2: Visiting {len(robots_sitemaps)} sitemap(s) from robots.txt to retrieve all nested sitemap URLs...")
         all_urls = set()
         
-        for sitemap_url in sitemaps:
+        for sitemap_url in robots_sitemaps:
             urls = await self.parse_sitemap(session, sitemap_url)
             all_urls.update(urls)
         
         self.discovered_urls = all_urls
-        logger.info(f"📊 Total URLs discovered from sitemaps: {len(all_urls)}")
-        return all_urls
+        total_links_count = len(all_urls)
+        
+        logger.info(f"📊 Total URLs discovered from sitemaps: {total_links_count}")
+        logger.info(f"📋 Found {len(self.all_found_sitemap_urls)} total sitemap URL(s) (from robots.txt + nested ones):")
+        for idx, sitemap_url in enumerate(self.all_found_sitemap_urls, 1):
+            status = "✅" if sitemap_url in self.accessed_sitemap_urls else "❌"
+            logger.info(f"   {idx}. {status} {sitemap_url}")
+        
+        return {
+            'urls': all_urls,
+            'all_sitemap_urls': self.all_found_sitemap_urls,  # All sitemap URLs found (robots.txt + nested)
+            'accessed_sitemap_urls': self.accessed_sitemap_urls,  # Only successfully accessed
+            'total_links_count': total_links_count
+        }
 
 
