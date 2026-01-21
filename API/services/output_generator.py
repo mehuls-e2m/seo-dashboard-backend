@@ -30,6 +30,26 @@ class APIOutputGenerator:
         """
         total_pages = len(all_results)
         
+        # Calculate unique issue counts (based on issue types, not affected pages/images)
+        unique_issues_by_type = {}
+        for result in all_results:
+            issues = result.get('score', {}).get('issues', [])
+            for issue in issues:
+                original_message = issue.get('message', '')
+                normalized_message = self._normalize_issue_message(original_message)
+                issue_key = f"{issue.get('category', 'Unknown')} - {issue.get('type', 'Unknown')} - {normalized_message}"
+                if issue_key not in unique_issues_by_type:
+                    unique_issues_by_type[issue_key] = {
+                        'severity': issue.get('severity', 'low')
+                    }
+        
+        # Count unique issues by severity
+        total_unique_issues = len(unique_issues_by_type)
+        critical_unique = sum(1 for issue in unique_issues_by_type.values() if issue['severity'] == 'critical')
+        high_unique = sum(1 for issue in unique_issues_by_type.values() if issue['severity'] == 'high')
+        medium_unique = sum(1 for issue in unique_issues_by_type.values() if issue['severity'] == 'medium')
+        low_unique = sum(1 for issue in unique_issues_by_type.values() if issue['severity'] == 'low')
+        
         # Status code distribution - Initialize with all important status codes
         important_status_codes = ['200', '301', '302', '304', '400', '401', '403', '404', '500', '502', '503', '504']
         status_codes = {code: 0 for code in important_status_codes}
@@ -197,13 +217,17 @@ class APIOutputGenerator:
         images_without_alt = sum(r.get('onpage', {}).get('image_alt', {}).get('images_without_alt', 0) for r in all_results)
         
         # Collect all image URLs without alt text (actual image URLs, not webpage URLs)
+        # Exclude SVG images - only count proper images
         all_images_without_alt_urls = []
         for r in all_results:
             image_alt = r.get('onpage', {}).get('image_alt', {})
             # Use images_without_alt_urls if available, otherwise empty list
             image_urls = image_alt.get('images_without_alt_urls', [])
             if image_urls:
-                all_images_without_alt_urls.extend(image_urls)
+                # Filter out SVG images
+                proper_images = [img_url for img_url in image_urls 
+                               if not (img_url.lower().endswith('.svg') or '.svg' in img_url.lower())]
+                all_images_without_alt_urls.extend(proper_images)
         total_internal_links = sum(r.get('onpage', {}).get('internal_links', {}).get('internal_link_count', 0) for r in all_results)
         broken_internal_links = sum(r.get('onpage', {}).get('internal_links', {}).get('broken_link_count', 0) for r in all_results)
         
@@ -231,11 +255,11 @@ class APIOutputGenerator:
                 'timestamp': self.timestamp,
                 'total_crawled_pages': total_pages,
                 'average_seo_score': round(site_stats.get('average_score', 0), 2),
-                'total_issues': site_stats.get('total_issues', 0),
-                'critical_issues_count': site_stats.get('critical_issues', 0),
-                'high_issues_count': site_stats.get('high_issues', 0),
-                'medium_issues_count': site_stats.get('medium_issues', 0),
-                'low_issues_count': site_stats.get('low_issues', 0)
+                'total_issues': total_unique_issues,  # Count of unique issue types
+                'critical_issues_count': critical_unique,
+                'high_issues_count': high_unique,
+                'medium_issues_count': medium_unique,
+                'low_issues_count': low_unique
             },
             'crawlability': {
                 'robots_txt_exists': crawlability_info.get('robots_txt_exists', False),
@@ -509,6 +533,8 @@ class APIOutputGenerator:
         total_pages = len(all_results)
         
         # Group issues by type and collect URLs
+        # Each unique issue type should have number_of_issues = 1 (one unique issue)
+        # affected_pages_count shows how many pages are affected by this issue
         issues_by_type = {}
         for result in all_results:
             url = result.get('url', '')
@@ -526,12 +552,12 @@ class APIOutputGenerator:
                         'category': issue.get('category', 'Unknown'),
                         'type': issue.get('type', 'Unknown'),
                         'severity': issue.get('severity', 'low'),
-                        'number_of_issues': 0,
                         'affected_pages': [],
                         'links_without_anchor_text': set()
                     }
-                issues_by_type[issue_key]['number_of_issues'] += 1
-                issues_by_type[issue_key]['affected_pages'].append(url)
+                # Track affected pages (avoid duplicates)
+                if url not in issues_by_type[issue_key]['affected_pages']:
+                    issues_by_type[issue_key]['affected_pages'].append(url)
                 
                 # Extract link URL from "Link without anchor text: URL" messages
                 if normalized_message == "Link without anchor text" and original_message.startswith("Link without anchor text:"):
@@ -548,9 +574,9 @@ class APIOutputGenerator:
                 'category': issue_data['category'],
                 'type': issue_data['type'],
                 'severity': issue_data['severity'],
-                'number_of_issues': issue_data['number_of_issues'],
-                'affected_pages_count': len(set(issue_data['affected_pages'])),
-                'affected_pages': list(set(issue_data['affected_pages']))
+                'number_of_issues': 1,  # Each unique issue type counts as 1 issue
+                'affected_pages_count': len(issue_data['affected_pages']),
+                'affected_pages': issue_data['affected_pages']
             }
             
             # For "Link without anchor text" issue, add the links information
@@ -560,7 +586,16 @@ class APIOutputGenerator:
             
             issues_list.append(issue_dict)
         
-        issues_list.sort(key=lambda x: (severity_order.get(x['severity'], 4), -x['affected_pages_count']))
+        issues_list.sort(key=lambda x: (severity_order.get(x['severity'], 4), -x.get('affected_pages_count', 0)))
+        
+        # Calculate total issues based on unique issue types (not affected pages/images)
+        total_unique_issues = len(issues_list)
+        
+        # Count issues by severity from the grouped issues list
+        critical_issues_count = sum(1 for issue in issues_list if issue['severity'] == 'critical')
+        high_issues_count = sum(1 for issue in issues_list if issue['severity'] == 'high')
+        medium_issues_count = sum(1 for issue in issues_list if issue['severity'] == 'medium')
+        low_issues_count = sum(1 for issue in issues_list if issue['severity'] == 'low')
         
         # Collect detailed content and attach to relevant issues
         # Map issue names to their details
@@ -664,15 +699,30 @@ class APIOutputGenerator:
             
             # Images missing alt text - match variations like "image(s) missing alt text"
             elif 'image' in issue_name and ('missing alt' in issue_name or 'alt' in issue_name):
-                # Collect all image URLs from affected pages
+                # Collect all image URLs from affected pages (excluding SVG images)
                 all_image_urls = []
-                for url in issue_dict['affected_pages']:
+                for url in issue_dict.get('affected_pages', []):
                     if url in images_without_alt_details:
-                        all_image_urls.extend(images_without_alt_details[url])
+                        # Filter out SVG images
+                        page_images = [img_url for img_url in images_without_alt_details[url] 
+                                     if not (img_url.lower().endswith('.svg') or '.svg' in img_url.lower())]
+                        all_image_urls.extend(page_images)
+                
                 if all_image_urls:
                     issue_dict['images_without_alt_urls'] = all_image_urls
-                    # Remove affected_pages since image URLs are provided
+                    issue_dict['number_of_images'] = len(all_image_urls)  # Count of images with issue
+                    # Remove affected_pages_count and affected_pages since we have image-specific data
+                    issue_dict.pop('affected_pages_count', None)
                     issue_dict.pop('affected_pages', None)
+        
+        # Add additional issues from other sections (crawlability, status codes, advanced SEO, etc.)
+        additional_issues = self._extract_additional_issues(
+            all_results, crawlability_info, orphan_pages
+        )
+        issues_list.extend(additional_issues)
+        
+        # Re-sort issues list after adding additional issues
+        issues_list.sort(key=lambda x: (severity_order.get(x['severity'], 4), -x.get('affected_pages_count', x.get('number_of_images', 0))))
         
         # Extract additional SEO data
         additional_seo_data = self._extract_additional_seo_data(all_results)
@@ -697,17 +747,18 @@ class APIOutputGenerator:
             avg_time = 0
         
         # Build issues data (without all_issues and without separated technical_seo/onpage_seo)
+        # Use counts based on unique issue types, not affected pages/images
         issues_data = {
             'site_overview': {
                 'base_url': self.base_url,
                 'timestamp': self.timestamp,
                 'total_crawled_pages': total_pages,
                 'average_seo_score': round(site_stats.get('average_score', 0), 2),
-                'total_issues': site_stats.get('total_issues', 0),
-                'critical_issues_count': site_stats.get('critical_issues', 0),
-                'high_issues_count': site_stats.get('high_issues', 0),
-                'medium_issues_count': site_stats.get('medium_issues', 0),
-                'low_issues_count': site_stats.get('low_issues', 0)
+                'total_issues': total_unique_issues,  # Count of unique issue types
+                'critical_issues_count': critical_issues_count,
+                'high_issues_count': high_issues_count,
+                'medium_issues_count': medium_issues_count,
+                'low_issues_count': low_issues_count
             },
             'crawlability': {
                 'robots_txt_exists': crawlability_info.get('robots_txt_exists', False),
@@ -940,6 +991,235 @@ class APIOutputGenerator:
             }
         }
     
+    def _extract_additional_issues(
+        self, 
+        all_results: List[Dict], 
+        crawlability_info: Dict, 
+        orphan_pages: Set
+    ) -> List[Dict]:
+        """
+        Extract additional issues from crawlability, status codes, and other sections.
+        These are issues that don't come from the score issues but are important to report.
+        """
+        additional_issues = []
+        total_pages = len(all_results)
+        
+        # === CRAWLABILITY ISSUES ===
+        # No robots.txt - Critical
+        if not crawlability_info.get('robots_txt_exists', False):
+            additional_issues.append({
+                'issue_name': 'Missing robots.txt file',
+                'category': 'Technical',
+                'type': 'Crawlability',
+                'severity': 'critical',
+                'number_of_issues': 1,
+                'affected_pages_count': 0,
+                'description': 'robots.txt file is missing. This file helps search engines understand which pages should be crawled.'
+            })
+        
+        # No sitemaps found - Critical
+        all_sitemap_urls = crawlability_info.get('all_sitemap_urls', [])
+        if not all_sitemap_urls:
+            additional_issues.append({
+                'issue_name': 'No sitemaps found',
+                'category': 'Technical',
+                'type': 'Crawlability',
+                'severity': 'critical',
+                'number_of_issues': 1,
+                'affected_pages_count': 0,
+                'description': 'No XML sitemaps were found. Sitemaps help search engines discover and index all pages on your site.'
+            })
+        
+        # No llms.txt - High
+        if not crawlability_info.get('llms_txt_exists', False):
+            additional_issues.append({
+                'issue_name': 'Missing llms.txt file',
+                'category': 'Technical',
+                'type': 'Crawlability',
+                'severity': 'high',
+                'number_of_issues': 1,
+                'affected_pages_count': 0,
+                'description': 'llms.txt file is missing. This file helps LLM agents understand your site structure and content.'
+            })
+        
+        # === ORPHAN PAGES ===
+        if orphan_pages:
+            additional_issues.append({
+                'issue_name': 'Orphan pages (no internal in-links)',
+                'category': 'On-Page',
+                'type': 'Internal Links',
+                'severity': 'high',
+                'number_of_issues': 1,
+                'affected_pages_count': len(orphan_pages),
+                'affected_pages': sorted(list(orphan_pages))[:50],  # Limit to first 50
+                'description': f'{len(orphan_pages)} page(s) have no internal links pointing to them, making them hard to discover.'
+            })
+        
+        # === 404 RESPONSES ===
+        pages_404 = [r.get('url', '') for r in all_results if r.get('status_code') == 404]
+        if pages_404:
+            additional_issues.append({
+                'issue_name': 'Pages returning 404 Not Found',
+                'category': 'Technical',
+                'type': 'HTTP Status',
+                'severity': 'high',
+                'number_of_issues': 1,
+                'affected_pages_count': len(pages_404),
+                'affected_pages': sorted(pages_404)[:50],  # Limit to first 50
+                'description': f'{len(pages_404)} page(s) are returning 404 status codes. These pages should be fixed or redirected.'
+            })
+        
+        # === OVERSIZED IMAGES ===
+        # Collect oversized images with criteria
+        oversized_images_data = []
+        for result in all_results:
+            url = result.get('url', '')
+            html = result.get('html_content', '')
+            if not html:
+                continue
+            
+            try:
+                from bs4 import BeautifulSoup
+                from urllib.parse import urljoin
+                soup = BeautifulSoup(html, 'lxml')
+                images = soup.find_all('img')
+                
+                for img in images:
+                    img_src = img.get('src', '') or img.get('data-src', '')
+                    if not img_src or (img_src.lower().endswith('.svg') or '.svg' in img_src.lower()):
+                        continue  # Skip SVG images
+                    
+                    img_url = urljoin(url, img_src)
+                    width_attr = img.get('width', '')
+                    height_attr = img.get('height', '')
+                    
+                    # Check if image might be oversized
+                    # Criteria: Missing dimensions OR dimensions suggest large image (>2000px)
+                    is_oversized = False
+                    criteria = []
+                    
+                    if not width_attr or not height_attr:
+                        is_oversized = True
+                        criteria.append('Missing width/height attributes (can cause layout shift)')
+                    else:
+                        try:
+                            width = int(width_attr)
+                            height = int(height_attr)
+                            # Check if image dimensions are very large (likely not optimized)
+                            if width > 2000 or height > 2000:
+                                is_oversized = True
+                                criteria.append(f'Large dimensions ({width}x{height}px) - consider resizing')
+                            # Check aspect ratio (very wide or tall images might be problematic)
+                            if width > 0 and height > 0:
+                                aspect_ratio = max(width, height) / min(width, height)
+                                if aspect_ratio > 5:
+                                    is_oversized = True
+                                    criteria.append(f'Extreme aspect ratio ({aspect_ratio:.1f}:1) - may need optimization')
+                        except (ValueError, TypeError):
+                            is_oversized = True
+                            criteria.append('Invalid dimension values')
+                    
+                    if is_oversized:
+                        oversized_images_data.append({
+                            'image_url': img_url,
+                            'page_url': url,
+                            'criteria': criteria,
+                            'width': width_attr if width_attr else 'unknown',
+                            'height': height_attr if height_attr else 'unknown'
+                        })
+            except Exception as e:
+                logger.warning(f"⚠️ Error checking oversized images for {url}: {str(e)}")
+                continue
+        
+        if oversized_images_data:
+            # Limit to first 50 images
+            oversized_images_data = oversized_images_data[:50]
+            additional_issues.append({
+                'issue_name': 'Oversized or unoptimized images',
+                'category': 'On-Page',
+                'type': 'Image Optimization',
+                'severity': 'medium',
+                'number_of_issues': 1,
+                'number_of_images': len(oversized_images_data),
+                'oversized_images': oversized_images_data,
+                'criteria': [
+                    'Missing width/height attributes (can cause layout shift)',
+                    'Large dimensions (>2000px width or height)',
+                    'Extreme aspect ratio (>5:1)',
+                    'Invalid dimension values'
+                ],
+                'description': f'{len(oversized_images_data)} image(s) may be oversized or unoptimized. Images are flagged if they: (1) are missing width/height attributes, (2) have dimensions larger than 2000px, (3) have extreme aspect ratios (>5:1), or (4) have invalid dimension values. These issues can cause layout shifts, slow page loads, and poor user experience.'
+            })
+        
+        # === MISSING VIEWPORT (Responsive Design) ===
+        pages_missing_viewport = []
+        for result in all_results:
+            html = result.get('html_content', '')
+            if html:
+                try:
+                    from bs4 import BeautifulSoup
+                    soup = BeautifulSoup(html, 'lxml')
+                    viewport = soup.find('meta', attrs={'name': 'viewport'})
+                    if not viewport:
+                        pages_missing_viewport.append(result.get('url', ''))
+                except:
+                    pass
+        
+        if pages_missing_viewport:
+            additional_issues.append({
+                'issue_name': 'Missing viewport meta tag',
+                'category': 'Technical',
+                'type': 'Responsive Design',
+                'severity': 'high',
+                'number_of_issues': 1,
+                'affected_pages_count': len(pages_missing_viewport),
+                'affected_pages': sorted(pages_missing_viewport)[:50],
+                'description': 'Viewport meta tag is missing. This is essential for responsive design and mobile SEO.'
+            })
+        
+        # === MISSING CACHE HEADERS ===
+        pages_missing_cache = []
+        for result in all_results:
+            headers = result.get('headers', {})
+            headers_lower = {k.lower(): v for k, v in headers.items()}
+            if not headers_lower.get('cache-control'):
+                pages_missing_cache.append(result.get('url', ''))
+        
+        if pages_missing_cache and len(pages_missing_cache) > total_pages * 0.5:  # If more than 50% of pages
+            additional_issues.append({
+                'issue_name': 'Missing Cache-Control headers',
+                'category': 'Technical',
+                'type': 'Performance',
+                'severity': 'medium',
+                'number_of_issues': 1,
+                'affected_pages_count': len(pages_missing_cache),
+                'affected_pages': sorted(pages_missing_cache)[:50],
+                'description': f'{len(pages_missing_cache)} page(s) are missing Cache-Control headers, which can impact page load performance.'
+            })
+        
+        # === MISSING COMPRESSION ===
+        pages_without_compression = []
+        for result in all_results:
+            headers = result.get('headers', {})
+            headers_lower = {k.lower(): v for k, v in headers.items()}
+            content_encoding = headers_lower.get('content-encoding', '')
+            if not content_encoding or content_encoding not in ['gzip', 'deflate', 'br', 'brotli']:
+                pages_without_compression.append(result.get('url', ''))
+        
+        if pages_without_compression and len(pages_without_compression) > total_pages * 0.5:  # If more than 50% of pages
+            additional_issues.append({
+                'issue_name': 'Missing content compression',
+                'category': 'Technical',
+                'type': 'Performance',
+                'severity': 'medium',
+                'number_of_issues': 1,
+                'affected_pages_count': len(pages_without_compression),
+                'affected_pages': sorted(pages_without_compression)[:50],
+                'description': f'{len(pages_without_compression)} page(s) are not using content compression (gzip/deflate/brotli), which can slow down page loads.'
+            })
+        
+        return additional_issues
+    
     def _extract_advanced_seo_data(self, all_results: List[Dict]) -> Dict:
         """
         Extract advanced SEO data: Pagination, Caching, Image Optimization, 
@@ -1083,12 +1363,27 @@ class APIOutputGenerator:
                             responsive_images += 1
                         
                         # Check dimensions
-                        width = img.get('width')
-                        height = img.get('height')
-                        if width and height:
+                        width_attr = img.get('width', '')
+                        height_attr = img.get('height', '')
+                        if width_attr and height_attr:
                             images_with_dimensions += 1
+                            # Check if dimensions suggest oversized image
+                            try:
+                                width = int(width_attr)
+                                height = int(height_attr)
+                                # Flag if dimensions are very large (>2000px) or extreme aspect ratio
+                                if width > 2000 or height > 2000:
+                                    oversized_images.append(img_url)
+                                elif width > 0 and height > 0:
+                                    aspect_ratio = max(width, height) / min(width, height)
+                                    if aspect_ratio > 5:
+                                        oversized_images.append(img_url)
+                            except (ValueError, TypeError):
+                                # Invalid dimensions, treat as potentially oversized
+                                oversized_images.append(img_url)
                         else:
                             images_without_dimensions += 1
+                            # Missing dimensions can cause layout shift and indicate potential optimization issues
                             if img_src:
                                 oversized_images.append(img_url)
                 

@@ -272,8 +272,12 @@ class OnPageAuditor:
             
             for img in images:
                 from urllib.parse import urljoin
-                src = img.get('src', '')
+                src = img.get('src', '') or img.get('data-src', '')
                 alt = img.get('alt', None)
+                
+                # Skip SVG images - they are vector graphics, not regular images
+                if src and (src.lower().endswith('.svg') or '.svg' in src.lower()):
+                    continue
                 
                 # Skip very small images (likely decorative)
                 width = img.get('width', '')

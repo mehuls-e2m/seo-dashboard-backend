@@ -10,32 +10,32 @@ logger = logging.getLogger(__name__)
 class RuleEngine:
     """Score and prioritize SEO issues based on severity and impact."""
     
-    # Severity weights
+    # Severity weights (more liberal - reduced penalties)
     SEVERITY_WEIGHTS = {
-        'critical': -40,
-        'high': -20,
-        'medium': -10,
-        'low': -5
+        'critical': -15,  # Reduced from -40
+        'high': -8,       # Reduced from -20
+        'medium': -4,    # Reduced from -10
+        'low': -2        # Reduced from -5
     }
     
-    # Issue-specific weights
+    # Issue-specific weights (more liberal - reduced penalties)
     ISSUE_WEIGHTS = {
-        'noindex_on_indexable': -40,
-        'canonical_404': -30,
-        'canonical_to_homepage': -30,
-        'missing_title': -20,
-        'missing_meta_description': -15,
-        'no_h1': -15,
-        'redirect_chain_404': -30,
-        'redirect_loop': -40,
-        'mixed_content_js_css': -25,
-        'not_https': -40,
-        'missing_structured_data': -5,
-        'broken_internal_links': -10,
-        'orphan_page': -15,
-        'duplicate_title': -10,
-        'duplicate_description': -5,
-        'multiple_h1': -10
+        'noindex_on_indexable': -15,  # Reduced from -40
+        'canonical_404': -12,         # Reduced from -30
+        'canonical_to_homepage': -12, # Reduced from -30
+        'missing_title': -8,          # Reduced from -20
+        'missing_meta_description': -6, # Reduced from -15
+        'no_h1': -6,                  # Reduced from -15
+        'redirect_chain_404': -12,    # Reduced from -30
+        'redirect_loop': -15,         # Reduced from -40
+        'mixed_content_js_css': -10,  # Reduced from -25
+        'not_https': -15,             # Reduced from -40
+        'missing_structured_data': -2, # Reduced from -5
+        'broken_internal_links': -4,  # Reduced from -10
+        'orphan_page': -6,            # Reduced from -15
+        'duplicate_title': -4,        # Reduced from -10
+        'duplicate_description': -2,   # Reduced from -5
+        'multiple_h1': -4             # Reduced from -10
     }
     
     def __init__(self):
@@ -212,8 +212,9 @@ class RuleEngine:
             # Image alt issues
             image_alt = onpage_results.get('image_alt', {})
             if image_alt.get('images_without_alt', 0) > 0:
-                weight = self.SEVERITY_WEIGHTS.get('medium', -10)
-                score += weight * min(image_alt['images_without_alt'], 5)  # Cap at 5
+                weight = self.SEVERITY_WEIGHTS.get('medium', -4)
+                # More liberal: reduce impact per image and cap lower
+                score += weight * min(image_alt['images_without_alt'], 3)  # Cap at 3 instead of 5
                 all_issues.append({
                     'category': 'On-Page',
                     'type': 'Image Alt',
@@ -239,8 +240,9 @@ class RuleEngine:
                         'weight': weight
                     })
         
-        # Ensure score doesn't go below 0
-        score = max(0, score)
+        # More liberal scoring: ensure score doesn't go below 20 (instead of 0)
+        # This gives pages a minimum score even with many issues
+        score = max(20, score)
         
         # Sort issues by severity (critical first)
         severity_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
@@ -288,12 +290,16 @@ class RuleEngine:
         total_score = sum(score['score'] for score in score_dicts)
         average_score = total_score / len(score_dicts)
         
+        # Reduce the score size by applying a scaling factor (0.7 = 70% of original score)
+        # This makes the score more conservative and smaller
+        scaled_average_score = average_score * 0.7
+        
         total_issues = sum(score['issue_count'] for score in score_dicts)
         total_critical = sum(score['critical_count'] for score in score_dicts)
         total_high = sum(score['high_count'] for score in score_dicts)
         
         return {
-            'average_score': round(average_score, 2),
+            'average_score': round(scaled_average_score, 2),
             'total_pages': len(score_dicts),
             'total_issues': total_issues,
             'critical_issues': total_critical,
