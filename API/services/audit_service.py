@@ -40,7 +40,7 @@ class AuditService:
     """Service for performing SEO audits"""
     
     def __init__(self):
-        self.max_pages_default = 999999  # Large number to crawl all pages when max_pages is None
+        self.max_pages_default = 9999  # Default number of pages to crawl when max_pages is not provided
         
     async def perform_audit(
         self,
