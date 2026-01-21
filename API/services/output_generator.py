@@ -66,6 +66,22 @@ class APIOutputGenerator:
         pages_with_meta_robots = sum(1 for r in all_results 
                                     if r.get('technical', {}).get('meta_robots', {}).get('has_meta_robots', False))
         
+        # Server response time statistics (Time to First Byte - TTFB)
+        server_response_times = []
+        for r in all_results:
+            response_time = r.get('server_response_time_ms')
+            if response_time is not None and isinstance(response_time, (int, float)) and response_time > 0:
+                server_response_times.append(response_time)
+        
+        if server_response_times:
+            min_server_response_time = round(min(server_response_times), 2)
+            max_server_response_time = round(max(server_response_times), 2)
+            avg_server_response_time = round(sum(server_response_times) / len(server_response_times), 2)
+        else:
+            min_server_response_time = 0
+            max_server_response_time = 0
+            avg_server_response_time = 0
+        
         # On-page SEO statistics - Detailed
         pages_with_title = sum(1 for r in all_results 
                               if r.get('onpage', {}).get('title', {}).get('has_title', False))
@@ -260,6 +276,13 @@ class APIOutputGenerator:
                     'coverage_percentage': round((pages_with_structured_data / total_pages * 100), 2) if total_pages > 0 else 0,
                     'schema_types_found': list(schema_types),
                     'total_schema_types': len(schema_types)
+                },
+                'server_response_time': {
+                    'min_time_ms': min_server_response_time,
+                    'max_time_ms': max_server_response_time,
+                    'avg_time_ms': avg_server_response_time,
+                    'pages_measured': len(server_response_times),
+                    'total_pages': total_pages
                 }
             },
             'onpage_seo': {
@@ -325,6 +348,20 @@ class APIOutputGenerator:
         # Add to onpage_seo: external_links, content_analysis
         stats_data['onpage_seo']['external_links'] = additional_stats.get('external_links', {})
         stats_data['onpage_seo']['content_analysis'] = additional_stats.get('content_analysis', {})
+        
+        # Extract advanced SEO stats
+        advanced_stats = self._extract_advanced_seo_data(all_results)
+        
+        # Add new advanced SEO sections to technical_seo
+        stats_data['technical_seo']['pagination'] = advanced_stats.get('pagination', {})
+        stats_data['technical_seo']['caching_compression'] = advanced_stats.get('caching_compression', {})
+        stats_data['technical_seo']['cdn_behavior'] = advanced_stats.get('cdn_behavior', {})
+        stats_data['technical_seo']['markups'] = advanced_stats.get('markups', {})
+        stats_data['technical_seo']['hreflang_usage'] = advanced_stats.get('hreflang_usage', {})
+        stats_data['technical_seo']['image_optimization'] = advanced_stats.get('image_optimization', {})
+        
+        # Add remaining advanced SEO sections to onpage_seo
+        stats_data['onpage_seo']['responsive_design'] = advanced_stats.get('responsive_design', {})
         
         return stats_data
     
@@ -640,6 +677,25 @@ class APIOutputGenerator:
         # Extract additional SEO data
         additional_seo_data = self._extract_additional_seo_data(all_results)
         
+        # Extract advanced SEO data
+        advanced_seo_data = self._extract_advanced_seo_data(all_results)
+        
+        # Calculate server response time statistics for issues output
+        server_response_times_issues = []
+        for r in all_results:
+            response_time = r.get('server_response_time_ms')
+            if response_time is not None and isinstance(response_time, (int, float)) and response_time > 0:
+                server_response_times_issues.append(response_time)
+        
+        if server_response_times_issues:
+            min_time = round(min(server_response_times_issues), 2)
+            max_time = round(max(server_response_times_issues), 2)
+            avg_time = round(sum(server_response_times_issues) / len(server_response_times_issues), 2)
+        else:
+            min_time = 0
+            max_time = 0
+            avg_time = 0
+        
         # Build issues data (without all_issues and without separated technical_seo/onpage_seo)
         issues_data = {
             'site_overview': {
@@ -671,7 +727,23 @@ class APIOutputGenerator:
                     'low': [i for i in issues_list if i['severity'] == 'low']
                 }
             },
-            **additional_seo_data
+            **additional_seo_data,
+            # Advanced SEO sections
+            'pagination': advanced_seo_data.get('pagination', {}),
+            'caching_compression': advanced_seo_data.get('caching_compression', {}),
+            'image_optimization': advanced_seo_data.get('image_optimization', {}),
+            'responsive_design': advanced_seo_data.get('responsive_design', {}),
+            'cdn_behavior': advanced_seo_data.get('cdn_behavior', {}),
+            'markups': advanced_seo_data.get('markups', {}),
+            'hreflang_usage': advanced_seo_data.get('hreflang_usage', {}),
+            # Server response time
+            'server_response_time': {
+                'min_time_ms': min_time,
+                'max_time_ms': max_time,
+                'avg_time_ms': avg_time,
+                'pages_measured': len(server_response_times_issues),
+                'total_pages': total_pages
+            }
         }
         
         return issues_data
@@ -730,7 +802,8 @@ class APIOutputGenerator:
         pages_with_encoding = 0
         languages = set()
         encodings = set()
-        external_domains = {}
+        external_domains = {}  # Will store: {domain: set of unique URLs}
+        external_domains_count = {}  # Will store: {domain: count of unique URLs}
         og_tags_found = set()
         twitter_tags_found = set()
         pages_without_og = []
@@ -793,8 +866,10 @@ class APIOutputGenerator:
                             pages_with_encoding += 1
                             encodings.add(encoding)
                 
-                # Extract external links
+                # Extract external links - track unique URLs per domain
                 links = soup.find_all('a', href=True)
+                page_external_urls = set()  # Track unique external URLs for this page
+                
                 for link in links:
                     href = link.get('href', '')
                     if href:
@@ -803,8 +878,22 @@ class APIOutputGenerator:
                         link_domain = parsed.netloc
                         
                         if link_domain and link_domain != base_domain:
+                            # Normalize URL (remove fragment, query params for counting unique URLs per domain)
+                            normalized_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+                            
+                            # Count total external links (all occurrences)
                             total_external_links += 1
-                            external_domains[link_domain] = external_domains.get(link_domain, 0) + 1
+                            
+                            # Track unique URLs per domain (avoid duplicates)
+                            if link_domain not in external_domains:
+                                external_domains[link_domain] = set()
+                            
+                            # Add unique URL to domain's set
+                            external_domains[link_domain].add(normalized_url)
+                
+                # After processing all links on the page, update counts
+                for domain, unique_urls in external_domains.items():
+                    external_domains_count[domain] = len(unique_urls)
                 
                 # Calculate content length (text only, excluding scripts/styles)
                 for script in soup(['script', 'style', 'meta', 'link', 'head']):
@@ -837,7 +926,7 @@ class APIOutputGenerator:
             'external_links': {
                 'total_external_links': total_external_links,
                 'unique_external_domains': len(external_domains),
-                'top_external_domains': sorted(external_domains.items(), key=lambda x: x[1], reverse=True)[:10]
+                'top_external_domains': sorted(external_domains_count.items(), key=lambda x: x[1], reverse=True)[:10]
             },
             'content_analysis': {
                 'average_content_length': avg_content_length,
@@ -848,6 +937,332 @@ class APIOutputGenerator:
                 'languages_found': sorted(list(languages)),
                 'pages_with_encoding': pages_with_encoding,
                 'encodings_found': sorted(list(encodings))
+            }
+        }
+    
+    def _extract_advanced_seo_data(self, all_results: List[Dict]) -> Dict:
+        """
+        Extract advanced SEO data: Pagination, Caching, Image Optimization, 
+        Responsive Design, CDN, Markups, Hreflang.
+        """
+        from bs4 import BeautifulSoup
+        from urllib.parse import urlparse, urljoin
+        import re
+        
+        total_pages = len(all_results)
+        
+        # Pagination
+        pages_with_prev = 0
+        pages_with_next = 0
+        pages_with_pagination = 0
+        pagination_issues = []
+        
+        # Caching & Compression
+        pages_with_cache_control = 0
+        pages_with_etag = 0
+        pages_with_expires = 0
+        pages_with_compression = 0
+        pages_missing_cache = []
+        cache_control_values = set()
+        compression_types = set()
+        
+        # Image Optimization
+        total_images = 0
+        webp_images = 0
+        avif_images = 0
+        lazy_loaded_images = 0
+        responsive_images = 0
+        images_with_dimensions = 0
+        images_without_dimensions = 0
+        oversized_images = []  # URLs of images that might be oversized
+        
+        # Responsive Design
+        pages_with_viewport = 0
+        pages_with_responsive_images = 0
+        pages_with_media_queries = 0
+        pages_missing_viewport = []
+        
+        # CDN Behavior
+        cdn_domains = set()
+        static_resource_domains = set()
+        pages_using_cdn = 0
+        cdn_domains_found = []
+        
+        # Markups/Structured Data
+        pages_with_json_ld = 0
+        pages_with_microdata = 0
+        pages_with_rdfa = 0
+        schema_types_found = set()
+        total_schemas = 0
+        
+        # Hreflang
+        pages_with_hreflang = 0
+        hreflang_languages = set()
+        hreflang_issues = []
+        
+        for result in all_results:
+            url = result.get('url', '')
+            html = result.get('html_content', '')
+            headers = result.get('headers', {})
+            
+            if not html:
+                continue
+            
+            try:
+                soup = BeautifulSoup(html, 'lxml')
+                base_domain = urlparse(self.base_url).netloc
+                base_parsed = urlparse(self.base_url)
+                
+                # === PAGINATION HANDLING ===
+                prev_link = soup.find('link', rel='prev')
+                next_link = soup.find('link', rel='next')
+                pagination_keywords = ['pagination', 'page', 'next', 'previous', 'prev']
+                pagination_elements = soup.find_all(['nav', 'ul', 'div'], 
+                    class_=re.compile('|'.join(pagination_keywords), re.I))
+                
+                has_pagination = False
+                if prev_link or next_link:
+                    has_pagination = True
+                    pages_with_prev += 1 if prev_link else 0
+                    pages_with_next += 1 if next_link else 0
+                elif pagination_elements:
+                    has_pagination = True
+                
+                if has_pagination:
+                    pages_with_pagination += 1
+                elif not has_pagination and total_pages > 1:
+                    # Check if URL looks like it might need pagination (e.g., /page/2, ?page=2)
+                    if re.search(r'[/?]page[=/]\d+', url, re.I):
+                        pagination_issues.append(url)
+                
+                # === CACHING & COMPRESSION ===
+                headers_lower = {k.lower(): v for k, v in headers.items()}
+                
+                cache_control = headers_lower.get('cache-control', '')
+                if cache_control:
+                    pages_with_cache_control += 1
+                    cache_control_values.add(cache_control)
+                else:
+                    pages_missing_cache.append(url)
+                
+                if headers_lower.get('etag'):
+                    pages_with_etag += 1
+                
+                if headers_lower.get('expires'):
+                    pages_with_expires += 1
+                
+                content_encoding = headers_lower.get('content-encoding', '')
+                if content_encoding and content_encoding in ['gzip', 'deflate', 'br', 'brotli']:
+                    pages_with_compression += 1
+                    compression_types.add(content_encoding)
+                
+                # === IMAGE OPTIMIZATION ===
+                images = soup.find_all('img')
+                page_images = []
+                
+                for img in images:
+                    total_images += 1
+                    img_src = img.get('src', '') or img.get('data-src', '')
+                    
+                    if img_src:
+                        img_url = urljoin(url, img_src)
+                        img_lower = img_url.lower()
+                        
+                        # Check formats
+                        if '.webp' in img_lower:
+                            webp_images += 1
+                        elif '.avif' in img_lower:
+                            avif_images += 1
+                        
+                        # Check lazy loading
+                        if img.get('loading') == 'lazy' or 'lazy' in img.get('class', []):
+                            lazy_loaded_images += 1
+                        
+                        # Check responsive images (srcset)
+                        if img.get('srcset'):
+                            responsive_images += 1
+                        
+                        # Check dimensions
+                        width = img.get('width')
+                        height = img.get('height')
+                        if width and height:
+                            images_with_dimensions += 1
+                        else:
+                            images_without_dimensions += 1
+                            if img_src:
+                                oversized_images.append(img_url)
+                
+                # === RESPONSIVE DESIGN ===
+                viewport = soup.find('meta', attrs={'name': 'viewport'})
+                if viewport:
+                    pages_with_viewport += 1
+                else:
+                    pages_missing_viewport.append(url)
+                
+                # Check for responsive images (srcset/sizes)
+                if soup.find_all('img', srcset=True):
+                    pages_with_responsive_images += 1
+                
+                # Check for media queries in style tags (simplified)
+                style_tags = soup.find_all('style')
+                for style in style_tags:
+                    if style.string and '@media' in style.string:
+                        pages_with_media_queries += 1
+                        break
+                
+                # Check link tags with media attributes
+                if soup.find_all('link', attrs={'media': True}):
+                    pages_with_media_queries += 1
+                
+                # === CDN BEHAVIOR ===
+                # Check static resources (images, CSS, JS)
+                static_resources = []
+                for img in soup.find_all('img', src=True):
+                    img_url = urljoin(url, img.get('src', ''))
+                    static_resources.append(urlparse(img_url).netloc)
+                
+                for link in soup.find_all('link', rel='stylesheet', href=True):
+                    css_url = urljoin(url, link.get('href', ''))
+                    static_resources.append(urlparse(css_url).netloc)
+                
+                for script in soup.find_all('script', src=True):
+                    js_url = urljoin(url, script.get('src', ''))
+                    static_resources.append(urlparse(js_url).netloc)
+                
+                # Identify CDN domains (different from base domain)
+                for resource_domain in static_resources:
+                    if resource_domain and resource_domain != base_domain:
+                        static_resource_domains.add(resource_domain)
+                        # Check for common CDN indicators
+                        if any(cdn in resource_domain.lower() for cdn in ['cdn', 'cloudfront', 'cloudflare', 'fastly', 'akamai']):
+                            cdn_domains.add(resource_domain)
+                
+                # Check CDN headers
+                cdn_headers = ['cf-ray', 'x-cache', 'x-served-by', 'x-cdn']
+                has_cdn_headers = any(h in headers_lower for h in cdn_headers)
+                has_cdn_domains = len(cdn_domains) > 0
+                
+                # Count page as using CDN if it has CDN headers OR CDN domains (count only once per page)
+                if has_cdn_headers or has_cdn_domains:
+                    pages_using_cdn += 1
+                    if has_cdn_domains:
+                        cdn_domains_found.extend(list(cdn_domains))
+                
+                # === MARKUPS/STRUCTURED DATA ===
+                # JSON-LD
+                json_ld_scripts = soup.find_all('script', type='application/ld+json')
+                if json_ld_scripts:
+                    pages_with_json_ld += 1
+                    total_schemas += len(json_ld_scripts)
+                    for script in json_ld_scripts:
+                        try:
+                            import json
+                            data = json.loads(script.string)
+                            if isinstance(data, dict) and '@type' in data:
+                                schema_types_found.add(data['@type'])
+                            elif isinstance(data, list):
+                                for item in data:
+                                    if isinstance(item, dict) and '@type' in item:
+                                        schema_types_found.add(item['@type'])
+                        except:
+                            pass
+                
+                # Microdata (itemscope)
+                if soup.find_all(attrs={'itemscope': True}):
+                    pages_with_microdata += 1
+                    microdata_types = soup.find_all(attrs={'itemtype': True})
+                    for item in microdata_types:
+                        itemtype = item.get('itemtype', '')
+                        if itemtype:
+                            schema_types_found.add(itemtype.split('/')[-1])
+                
+                # RDFa (already handled in technical audit, but count here too)
+                if soup.find_all(attrs={'typeof': True}) or soup.find_all(attrs={'property': True, 'vocab': True}):
+                    pages_with_rdfa += 1
+                
+                # === HREFLANG USAGE ===
+                hreflang_links = soup.find_all('link', rel='alternate', hreflang=True)
+                if hreflang_links:
+                    pages_with_hreflang += 1
+                    for link in hreflang_links:
+                        hreflang = link.get('hreflang', '').lower()
+                        href = link.get('href', '')
+                        
+                        if hreflang:
+                            hreflang_languages.add(hreflang)
+                        
+                        # Check for common issues
+                        if hreflang == 'x-default' and not href:
+                            hreflang_issues.append(f"{url}: x-default without href")
+                        
+                        # Check if hreflang URL is absolute
+                        if href and not href.startswith(('http://', 'https://')):
+                            hreflang_issues.append(f"{url}: Relative hreflang URL: {href}")
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Error extracting advanced SEO data for {url}: {str(e)}")
+                continue
+        
+        # Calculate percentages and prepare final data
+        return {
+            'pagination': {
+                'pages_with_pagination': pages_with_pagination,
+                'pages_with_prev_next': pages_with_prev + pages_with_next,
+                'pagination_coverage_percentage': round((pages_with_pagination / total_pages * 100), 2) if total_pages > 0 else 0,
+                'pagination_issues': pagination_issues[:20]  # Limit to first 20
+            },
+            'caching_compression': {
+                'pages_with_cache_control': pages_with_cache_control,
+                'pages_with_etag': pages_with_etag,
+                'pages_with_expires': pages_with_expires,
+                'pages_with_compression': pages_with_compression,
+                'cache_coverage_percentage': round((pages_with_cache_control / total_pages * 100), 2) if total_pages > 0 else 0,
+                'compression_coverage_percentage': round((pages_with_compression / total_pages * 100), 2) if total_pages > 0 else 0,
+                'compression_types': sorted(list(compression_types)),
+                'pages_missing_cache': pages_missing_cache[:20]  # Limit to first 20
+            },
+            'image_optimization': {
+                'total_images': total_images,
+                'webp_images': webp_images,
+                'avif_images': avif_images,
+                'lazy_loaded_images': lazy_loaded_images,
+                'responsive_images': responsive_images,
+                'images_with_dimensions': images_with_dimensions,
+                'images_without_dimensions': images_without_dimensions,
+                'lazy_loading_percentage': round((lazy_loaded_images / total_images * 100), 2) if total_images > 0 else 0,
+                'responsive_images_percentage': round((responsive_images / total_images * 100), 2) if total_images > 0 else 0,
+                'modern_format_percentage': round(((webp_images + avif_images) / total_images * 100), 2) if total_images > 0 else 0,
+                'oversized_images_sample': oversized_images[:20]  # Limit to first 20
+            },
+            'responsive_design': {
+                'pages_with_viewport': pages_with_viewport,
+                'pages_with_responsive_images': pages_with_responsive_images,
+                'pages_with_media_queries': pages_with_media_queries,
+                'viewport_coverage_percentage': round((pages_with_viewport / total_pages * 100), 2) if total_pages > 0 else 0,
+                'pages_missing_viewport': pages_missing_viewport[:20]  # Limit to first 20
+            },
+            'cdn_behavior': {
+                'pages_using_cdn': pages_using_cdn,
+                'cdn_coverage_percentage': round((pages_using_cdn / total_pages * 100), 2) if total_pages > 0 else 0,
+                'cdn_domains_found': sorted(list(set(cdn_domains_found)))[:10],  # Top 10 CDN domains
+                'unique_static_resource_domains': len(static_resource_domains),
+                'static_resource_domains': sorted(list(static_resource_domains))[:10]
+            },
+            'markups': {
+                'pages_with_json_ld': pages_with_json_ld,
+                'pages_with_microdata': pages_with_microdata,
+                'pages_with_rdfa': pages_with_rdfa,
+                'total_schemas_found': total_schemas,
+                'unique_schema_types': len(schema_types_found),
+                'schema_types_found': sorted(list(schema_types_found))[:20],  # Top 20 schema types
+                'json_ld_coverage_percentage': round((pages_with_json_ld / total_pages * 100), 2) if total_pages > 0 else 0
+            },
+            'hreflang_usage': {
+                'pages_with_hreflang': pages_with_hreflang,
+                'hreflang_coverage_percentage': round((pages_with_hreflang / total_pages * 100), 2) if total_pages > 0 else 0,
+                'unique_languages': len(hreflang_languages),
+                'languages_found': sorted(list(hreflang_languages)),
+                'hreflang_issues': hreflang_issues[:20]  # Limit to first 20
             }
         }
 

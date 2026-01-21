@@ -85,6 +85,9 @@ class Crawler:
         """
         async with self.limiter:
             try:
+                import time
+                start_time = time.time()
+                
                 async with session.get(
                     url,
                     timeout=aiohttp.ClientTimeout(total=30),
@@ -93,6 +96,10 @@ class Crawler:
                         'User-Agent': 'SEO-Audit-Bot/1.0 (Technical SEO Audit Tool)'
                     }
                 ) as response:
+                    # Measure server response time (TTFB - Time to First Byte)
+                    # Time from request start to when headers are received
+                    server_response_time_ms = (time.time() - start_time) * 1000
+                    
                     content = await response.text()
                     
                     # Get final URL after redirects
@@ -113,7 +120,8 @@ class Crawler:
                         'redirect_chain': redirect_chain,
                         'content_type': response.headers.get('Content-Type', ''),
                         'content_length': len(content),
-                        'fetch_time': datetime.now().isoformat()
+                        'fetch_time': datetime.now().isoformat(),
+                        'server_response_time_ms': server_response_time_ms
                     }
                     
                     return result

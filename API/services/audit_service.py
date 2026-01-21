@@ -186,7 +186,9 @@ class AuditService:
                     'technical': technical_results,
                     'onpage': onpage_results,
                     'score': score_results,
-                    'html_content': crawl_data['content']  # Include HTML for additional SEO analysis
+                    'html_content': crawl_data['content'],  # Include HTML for additional SEO analysis
+                    'headers': crawl_data.get('headers', {}),  # Include headers for caching/compression/CDN analysis
+                    'server_response_time_ms': crawl_data.get('server_response_time_ms')  # Include server response time
                 }
                 
                 all_results.append(page_result)

@@ -83,10 +83,10 @@ class PagespeedService:
             return self._extract_links_fallback(html, base_url)
         
         try:
-            logger.info("🤖 Using Gemini to extract 5 most important links from homepage")
+            logger.info("🤖 Using Gemini to extract 6 most important links from homepage")
             
             # Prepare prompt for Gemini
-            prompt = f"""Analyze the following homepage HTML and identify the 5 most important internal links that users would likely visit.
+            prompt = f"""Analyze the following homepage HTML and identify the 6 most important internal links that users would likely visit.
 
 Homepage HTML:
 {html[:10000]}  # Limit to first 10k chars to avoid token limits
@@ -94,15 +94,15 @@ Homepage HTML:
 Base URL: {base_url}
 
 Instructions:
-1. Identify the 5 most important internal links (navigation, main content links, key pages)
+1. Identify the 6 most important internal links (navigation, main content links, key pages)
 2. Prioritize links that are likely to be high-traffic or important pages (home, about, products, services, contact, etc.)
 3. Exclude external links, social media links, and non-content links
 4. Return ONLY a JSON array of absolute URLs
 5. Do not include any explanations or additional text
-6. Return exactly 5 URLs, or fewer if not enough internal links exist
+6. Return exactly 6 URLs, or fewer if not enough internal links exist
 
 Example output format:
-["https://example.com/about", "https://example.com/products", "https://example.com/services", "https://example.com/contact", "https://example.com/blog"]
+["https://example.com/about", "https://example.com/products", "https://example.com/services", "https://example.com/contact", "https://example.com/blog", "https://example.com/pricing"]
 
 Output:"""
             
@@ -118,23 +118,25 @@ Output:"""
             if json_match:
                 try:
                     links_json = json.loads(json_match.group(0))
-                    important_links = []
+                    candidate_links = []
                     
                     for link in links_json:
                         if isinstance(link, str):
                             # Ensure absolute URL
                             if not link.startswith(('http://', 'https://')):
                                 link = urljoin(base_url, link.lstrip('/'))
-                            important_links.append(link)
+                            candidate_links.append(link)
                     
-                    # Limit to 5 links
-                    important_links = important_links[:5]
+                    # Validate that all Gemini-extracted links actually exist in the HTML
+                    # This prevents using hallucinated or non-existent links
+                    validated_links = self._validate_links_exist_in_html(candidate_links, html, base_url)
                     
-                    logger.info(f"✅ Gemini extracted {len(important_links)} important link(s)")
-                    for idx, link in enumerate(important_links, 1):
+                    logger.info(f"✅ Gemini suggested {len(candidate_links)} links, validated {len(validated_links)} as real links from HTML")
+                    for idx, link in enumerate(validated_links, 1):
                         logger.info(f"   {idx}. {link}")
                     
-                    return important_links
+                    # Return validated links (up to 6)
+                    return validated_links[:6]
                 except json.JSONDecodeError as e:
                     logger.warning(f"⚠️ Failed to parse Gemini JSON response: {str(e)}")
             
@@ -142,8 +144,10 @@ Output:"""
             url_pattern = r'https?://[^\s,\]]+'
             urls = re.findall(url_pattern, response_text)
             if urls:
-                logger.info(f"✅ Gemini extracted {len(urls)} link(s) (via regex fallback)")
-                return urls[:5]
+                # Validate these URLs too
+                validated_urls = self._validate_links_exist_in_html(urls, html, base_url)
+                logger.info(f"✅ Gemini extracted {len(urls)} link(s) (via regex), validated {len(validated_urls)} as real")
+                return validated_urls[:6]
             
             logger.warning("⚠️ Gemini response format unexpected, using fallback method")
             return self._extract_links_fallback(html, base_url)
@@ -151,6 +155,50 @@ Output:"""
         except Exception as e:
             logger.warning(f"⚠️ Error using Gemini for link extraction: {str(e)}, using fallback")
             return self._extract_links_fallback(html, base_url)
+    
+    def _validate_links_exist_in_html(self, candidate_links: List[str], html: str, base_url: str) -> List[str]:
+        """
+        Validate that candidate links actually exist in the HTML.
+        Only returns links that are found in actual anchor tags.
+        """
+        try:
+            soup = BeautifulSoup(html, 'lxml')
+            base_domain = urlparse(base_url).netloc
+            
+            # Extract all actual href values from the HTML
+            actual_hrefs = set()
+            for link in soup.find_all('a', href=True):
+                href = link.get('href', '').strip()
+                if href:
+                    # Convert to absolute URL
+                    absolute_url = urljoin(base_url, href)
+                    parsed = urlparse(absolute_url)
+                    
+                    # Normalize (remove trailing slash, lowercase)
+                    normalized = absolute_url.rstrip('/').lower()
+                    
+                    # Only include internal links
+                    if parsed.netloc == base_domain or (not parsed.netloc and not href.startswith(('mailto:', 'tel:', 'javascript:', '#'))):
+                        actual_hrefs.add(normalized)
+            
+            # Validate candidate links against actual hrefs
+            validated = []
+            for candidate in candidate_links:
+                parsed_candidate = urlparse(candidate)
+                normalized_candidate = candidate.rstrip('/').lower()
+                
+                # Check if this link exists in actual hrefs
+                if normalized_candidate in actual_hrefs:
+                    validated.append(candidate)
+                else:
+                    logger.debug(f"⚠️ Link not found in HTML: {candidate}")
+            
+            return validated
+            
+        except Exception as e:
+            logger.error(f"❌ Error validating links: {str(e)}")
+            # If validation fails, return empty list to force fallback
+            return []
     
     def _extract_links_fallback(self, html: str, base_url: str) -> List[str]:
         """Fallback method to extract important links without Gemini"""
@@ -183,11 +231,45 @@ Output:"""
                         if absolute_url not in important_links and absolute_url != base_url:
                             important_links.append(absolute_url)
             
-            # Limit to 5
-            return important_links[:5]
+            # Limit to 6
+            return important_links[:6]
             
         except Exception as e:
             logger.error(f"❌ Error in fallback link extraction: {str(e)}")
+            return []
+    
+    def _extract_all_internal_links(self, html: str, base_url: str, existing_links: List[str]) -> List[str]:
+        """Extract all internal links from the homepage to ensure we have enough pages"""
+        try:
+            soup = BeautifulSoup(html, 'lxml')
+            base_domain = urlparse(base_url).netloc
+            existing_set = {link.rstrip('/') for link in existing_links}
+            
+            all_internal_links = []
+            
+            # Get all links from the page
+            all_links = soup.find_all('a', href=True)
+            for link in all_links:
+                href = link.get('href', '')
+                if href:
+                    absolute_url = urljoin(base_url, href)
+                    parsed = urlparse(absolute_url)
+                    normalized = absolute_url.rstrip('/')
+                    
+                    # Check if it's internal and not already in our list
+                    # Filter out common non-content links (mailto, tel, javascript, anchors)
+                    if (parsed.netloc == base_domain or not parsed.netloc) and \
+                       normalized not in existing_set and \
+                       not href.startswith(('mailto:', 'tel:', 'javascript:', '#')) and \
+                       href.strip() and \
+                       len(parsed.path) > 1:  # Avoid just domain root
+                        existing_set.add(normalized)
+                        all_internal_links.append(absolute_url)
+            
+            return all_internal_links
+            
+        except Exception as e:
+            logger.error(f"❌ Error extracting all internal links: {str(e)}")
             return []
     
     async def get_pagespeed_data(self, session: aiohttp.ClientSession, url: str) -> Optional[Dict]:
@@ -365,20 +447,61 @@ Output:"""
                         raise e
                     raise Exception(f"Failed to fetch homepage: {str(e)}")
             
-            # Step 2: Extract important links using Gemini
-            logger.info("🔍 Extracting important links...")
+            # Step 2: Extract exactly 7 pages (homepage + 6 others)
+            logger.info("🔍 Extracting exactly 7 pages for analysis (homepage + 6 others)...")
+            
+            # Start with homepage
+            final_links = [homepage_url]
+            seen = {homepage_url.rstrip('/')}
+            
+            # First try Gemini to get 6 important links
             important_links = await self.extract_important_links_with_gemini(html, homepage_url)
             
-            if not important_links:
-                logger.warning("⚠️ No important links found, using homepage only")
-                important_links = [homepage_url]
-            else:
-                # Include homepage in analysis
-                if homepage_url not in important_links:
-                    important_links.insert(0, homepage_url)
-                important_links = important_links[:5]  # Limit to 5 total
+            # Add Gemini links if we have them
+            if important_links:
+                for link in important_links:
+                    normalized = link.rstrip('/')
+                    if normalized not in seen:
+                        seen.add(normalized)
+                        final_links.append(link)
+                        if len(final_links) >= 7:
+                            break
             
-            logger.info(f"📊 Analyzing {len(important_links)} page(s): {important_links}")
+            # If we still don't have 7 pages, use fallback method
+            if len(final_links) < 7:
+                logger.info(f"📝 Got {len(final_links)} pages from Gemini, extracting more...")
+                fallback_links = self._extract_links_fallback(html, homepage_url)
+                for link in fallback_links:
+                    normalized = link.rstrip('/')
+                    if normalized not in seen:
+                        seen.add(normalized)
+                        final_links.append(link)
+                        if len(final_links) >= 7:
+                            break
+            
+            # If we still don't have 7 pages, extract all available links
+            if len(final_links) < 7:
+                logger.info(f"📝 Got {len(final_links)} pages from fallback, extracting all available links...")
+                all_additional = self._extract_all_internal_links(html, homepage_url, final_links)
+                for link in all_additional:
+                    normalized = link.rstrip('/')
+                    if normalized not in seen:
+                        seen.add(normalized)
+                        final_links.append(link)
+                        if len(final_links) >= 7:
+                            break
+            
+            # Final check: ensure we have exactly 7 pages (or as many as available)
+            # All links in final_links are guaranteed to be real links extracted from HTML
+            final_links = final_links[:7]
+            
+            if len(final_links) < 7:
+                logger.warning(f"⚠️ Only found {len(final_links)} unique real pages from homepage. Analyzing available pages.")
+            else:
+                logger.info(f"✅ Successfully found exactly 7 real pages extracted from homepage HTML")
+            
+            logger.info(f"📊 Analyzing {len(final_links)} real page(s) from homepage: {final_links}")
+            important_links = final_links
             
             # Step 3: Get pagespeed data for all pages in parallel
             tasks = [self.get_pagespeed_data(session, url) for url in important_links]

@@ -1,0 +1,66 @@
+{
+    "homepage_url": "https://www.leadgear.com/",
+    "total_pages_analyzed": 7,
+    "pages_analyzed": [
+      "https://www.leadgear.com/",
+      "https://www.leadgear.com/digital-marketing/",
+      "https://www.leadgear.com/web-design/",
+      "https://www.leadgear.com/portfolio/",
+      "https://www.leadgear.com/our-company/",
+      "https://www.leadgear.com/blog/",
+      "https://www.leadgear.com/careers/"
+    ],
+    "average_page_size_bytes": 116494,
+    "average_dom_elements": 607,
+    "average_scripts_count": 25,
+    "average_stylesheets_count": 12,
+    "total_scripts_count": 175,
+    "total_images_count": 226,
+    "performance": {
+      "enabled": true,
+      "pages_tested": 7,
+      "mobile_average": {
+        "load_time_ms": 529,
+        "page_size_bytes": 116494,
+        "dom_elements": 607,
+        "scripts_count": 25,
+        "stylesheets_count": 12,
+        "lcp_ms": 444,
+        "fid_ms": 515,
+        "inp_ms": 772,
+        "cls_score": 0.967
+      },
+      "desktop_average": {
+        "load_time_ms": 423,
+        "page_size_bytes": 116494,
+        "dom_elements": 607,
+        "scripts_count": 25,
+        "stylesheets_count": 12,
+        "lcp_ms": 333,
+        "fid_ms": 317,
+        "inp_ms": 475,
+        "cls_score": 0.791
+      },
+      "javascript_seo": {
+        "js_heavy_pages_percent": 100,
+        "dom_content_loaded_avg_ms": 317,
+        "fully_rendered_avg_ms": 634,
+        "hydration_issues_detected": false
+      },
+      "mobile_first": {
+        "content_parity": true,
+        "structured_data_parity": true,
+        "lazy_loaded_content_issues": true
+      },
+      "core_web_vitals": {
+        "lcp_avg_ms": 370,
+        "fid_avg_ms": 396,
+        "inp_avg_ms": 594,
+        "cls_avg_score": 0.879,
+        "lcp_status": "good",
+        "fid_status": "poor",
+        "inp_status": "poor",
+        "cls_status": "poor"
+      }
+    }
+  }

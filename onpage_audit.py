@@ -248,7 +248,7 @@ class OnPageAuditor:
         
         return duplicates
     
-    def audit_image_alt(self, html: str) -> Dict:
+    def audit_image_alt(self, html: str, url: str) -> Dict:
         """
         Check image alt text implementation.
         
@@ -261,6 +261,7 @@ class OnPageAuditor:
         issues = []
         severity = "low"
         images_without_alt = []
+        images_without_alt_urls = []
         images_with_empty_alt = []
         total_images = 0
         
@@ -270,6 +271,7 @@ class OnPageAuditor:
             total_images = len(images)
             
             for img in images:
+                from urllib.parse import urljoin
                 src = img.get('src', '')
                 alt = img.get('alt', None)
                 
@@ -279,6 +281,9 @@ class OnPageAuditor:
                 
                 if alt is None:
                     images_without_alt.append(src[:50] if src else 'unknown')
+                    img_url = urljoin(url, src) if src else ''
+                    if img_url:
+                        images_without_alt_urls.append(img_url)
                 elif alt == '':
                     # Empty alt might be intentional for decorative images
                     # But we'll flag it for review
@@ -300,6 +305,7 @@ class OnPageAuditor:
             'total_images': total_images,
             'images_without_alt': len(images_without_alt),
             'images_with_empty_alt': len(images_with_empty_alt),
+            'images_without_alt_urls': images_without_alt_urls,
             'status': 'good' if len(images_without_alt) == 0 else 'warning',
             'issues': issues,
             'severity': severity
@@ -418,7 +424,7 @@ class OnPageAuditor:
             'title': self.audit_title(html, url),
             'meta_description': self.audit_meta_description(html, url),
             'h1': self.audit_h1(html, url),
-            'image_alt': self.audit_image_alt(html),
+            'image_alt': self.audit_image_alt(html, url),
             'internal_links': self.audit_internal_links(html, url, crawled_urls)
         }
         
