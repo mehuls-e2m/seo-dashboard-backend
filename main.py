@@ -109,11 +109,13 @@ async def main():
             crawlability_info['sitemap_urls_from_robots'] = sitemap_urls_from_robots
             
             # Check for sitemap and get URLs from sitemap files
+            sitemap_urls_set = None  # Store full sitemap URLs set for orphan detection
             try:
                 async with aiohttp.ClientSession() as session:
                     sitemap_parser = SitemapParser(base_url)
                     sitemap_result = await sitemap_parser.get_all_sitemap_urls(session, crawler.robots_checker)
                     sitemap_urls = sitemap_result['urls']  # URLs extracted from sitemaps
+                    sitemap_urls_set = sitemap_urls  # Store full set for orphan detection
                     all_sitemap_urls = sitemap_result['all_sitemap_urls']  # All discovered sitemap URLs
                     accessed_sitemap_urls = sitemap_result['accessed_sitemap_urls']  # All accessed sitemap URLs
                     total_links_count = sitemap_result['total_links_count']  # Total number of links
@@ -123,12 +125,14 @@ async def main():
                     crawlability_info['all_sitemap_urls'] = all_sitemap_urls  # All discovered sitemap URLs (whether accessible or not)
                     crawlability_info['accessed_sitemap_urls'] = accessed_sitemap_urls  # All accessed sitemap URLs
                     crawlability_info['total_sitemap_links_count'] = total_links_count  # Total links from all sitemaps
+                    crawlability_info['sitemap_urls_full'] = sitemap_urls_set  # Store full set for orphan detection
             except Exception as e:
                 logger.warning(f"⚠️ Could not check sitemap: {str(e)}")
                 crawlability_info['sitemap_exists'] = len(sitemap_urls_from_robots) > 0
                 crawlability_info['all_sitemap_urls'] = sitemap_urls_from_robots  # Use robots.txt sitemaps as fallback
                 crawlability_info['accessed_sitemap_urls'] = []
                 crawlability_info['total_sitemap_links_count'] = 0
+                crawlability_info['sitemap_urls_full'] = None
         
         # Step 2: Perform audits
         all_results = []
@@ -175,21 +179,28 @@ async def main():
         # Check duplicate H1s
         duplicate_h1s = onpage_auditor.check_duplicate_h1s()
         
-        # Find orphan pages
-        orphan_pages = onpage_auditor.find_orphan_pages(crawled_urls)
+        # Find orphan pages using sitemap URLs if available
+        sitemap_urls = crawlability_info.get('sitemap_urls_full', None)
+        if sitemap_urls:
+            logger.info(f"📋 Using {len(sitemap_urls)} sitemap URLs for comprehensive orphan detection")
+        
+        orphan_pages = onpage_auditor.find_orphan_pages(crawled_urls, sitemap_urls=sitemap_urls, base_url=base_url)
+        logger.info(f"🔍 Found {len(orphan_pages)} orphan page(s)")
         
         # Add duplicate/orphan info to results
         for result in all_results:
             url = result['url']
             if url in orphan_pages:
+                # Use issue-specific weight for orphan pages
+                orphan_weight = rule_engine.ISSUE_WEIGHTS.get('orphan_page', -6)
                 result['score']['issues'].append({
                     'category': 'On-Page',
                     'type': 'Internal Links',
                     'severity': 'high',
                     'message': 'Orphan page (no internal in-links)',
-                    'weight': -15
+                    'weight': orphan_weight
                 })
-                result['score']['score'] = max(0, result['score']['score'] - 15)
+                result['score']['score'] = max(20, result['score']['score'] + orphan_weight)
                 result['score']['high_count'] += 1
                 result['score']['issue_count'] += 1
         

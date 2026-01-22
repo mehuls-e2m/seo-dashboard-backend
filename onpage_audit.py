@@ -2,7 +2,7 @@
 On-page SEO audit module: title, meta description, H1, alt text, internal linking.
 """
 from bs4 import BeautifulSoup
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Optional
 import logging
 from rapidfuzz import fuzz
 import networkx as nx
@@ -387,27 +387,74 @@ class OnPageAuditor:
             'severity': severity
         }
     
-    def find_orphan_pages(self, all_urls: Set[str]) -> Set[str]:
+    def find_orphan_pages(self, all_urls: Set[str], sitemap_urls: Optional[Set[str]] = None, base_url: Optional[str] = None) -> Set[str]:
         """
         Find pages with no internal in-links (orphans).
+        Uses sitemap URLs if available to find true orphan pages that weren't discovered during crawling.
         
         Args:
             all_urls: Set of all crawled URLs
+            sitemap_urls: Optional set of URLs from sitemaps (for comprehensive orphan detection)
+            base_url: Optional base URL to exclude homepage from orphan detection
             
         Returns:
             Set of orphan page URLs
         """
         orphans = set()
+        from utils import normalize_url, get_domain, is_internal_link
         
-        for url in all_urls:
-            # Check if URL has any in-links
-            if url in self.link_graph:
-                in_degree = self.link_graph.in_degree(url)
-                if in_degree == 0:
+        # Normalize base URL for homepage exclusion
+        normalized_base_url = None
+        if base_url:
+            normalized_base_url = normalize_url(base_url)
+        
+        # If sitemap URLs are provided, check all sitemap URLs (not just crawled ones)
+        # This allows us to find true orphan pages that exist in sitemap but weren't linked/discovered
+        if sitemap_urls:
+            # Normalize sitemap URLs and filter to internal links only
+            base_domain = get_domain(list(all_urls)[0]) if all_urls else None
+            if not base_domain and base_url:
+                base_domain = get_domain(base_url)
+            
+            normalized_sitemap_urls = set()
+            
+            for url in sitemap_urls:
+                normalized = normalize_url(url)
+                if base_domain and is_internal_link(normalized, base_domain):
+                    # Exclude homepage from orphan detection (it's the entry point)
+                    if normalized_base_url and normalized == normalized_base_url:
+                        continue
+                    normalized_sitemap_urls.add(normalized)
+            
+            # Check all sitemap URLs for orphan status
+            for url in normalized_sitemap_urls:
+                # Check if URL has any in-links in the link graph
+                if url in self.link_graph:
+                    in_degree = self.link_graph.in_degree(url)
+                    if in_degree == 0:
+                        # Page exists in sitemap and was crawled, but has no in-links
+                        orphans.add(url)
+                else:
+                    # URL in sitemap but not in link graph
+                    # This means it was either:
+                    # 1. Never crawled (true orphan - not linked from anywhere)
+                    # 2. Crawled but never linked to/from (orphan)
                     orphans.add(url)
-            else:
-                # URL not in graph at all (no links to or from it)
-                orphans.add(url)
+        else:
+            # Fallback to original method: only check crawled URLs
+            for url in all_urls:
+                # Exclude homepage from orphan detection
+                if normalized_base_url and normalize_url(url) == normalized_base_url:
+                    continue
+                
+                # Check if URL has any in-links
+                if url in self.link_graph:
+                    in_degree = self.link_graph.in_degree(url)
+                    if in_degree == 0:
+                        orphans.add(url)
+                else:
+                    # URL not in graph at all (no links to or from it)
+                    orphans.add(url)
         
         return orphans
     

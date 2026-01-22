@@ -387,6 +387,10 @@ class APIOutputGenerator:
         # Add remaining advanced SEO sections to onpage_seo
         stats_data['onpage_seo']['responsive_design'] = advanced_stats.get('responsive_design', {})
         
+        # Extract URL structure analysis
+        url_structure_stats = self._analyze_url_structure(all_results)
+        stats_data['onpage_seo']['url_structure'] = url_structure_stats
+        
         return stats_data
     
     def _extract_additional_seo_stats(self, all_results: List[Dict]) -> Dict:
@@ -536,6 +540,10 @@ class APIOutputGenerator:
         # Each unique issue type should have number_of_issues = 1 (one unique issue)
         # affected_pages_count shows how many pages are affected by this issue
         issues_by_type = {}
+        # Track normalized issue names to prevent duplicates even if category/type differ
+        # Map normalized_message -> issue_key to quickly find existing issues
+        normalized_to_key = {}
+        
         for result in all_results:
             url = result.get('url', '')
             issues = result.get('score', {}).get('issues', [])
@@ -544,9 +552,35 @@ class APIOutputGenerator:
                 original_message = issue.get('message', '')
                 normalized_message = self._normalize_issue_message(original_message)
                 
+                # Use normalized message as the primary key to prevent duplicates
+                # If we've seen this normalized message before, merge with existing issue
+                if normalized_message in normalized_to_key:
+                    existing_key = normalized_to_key[normalized_message]
+                    # Merge with existing issue
+                    if url not in issues_by_type[existing_key]['affected_pages']:
+                        issues_by_type[existing_key]['affected_pages'].append(url)
+                    # Extract link URL if applicable
+                    if normalized_message == "Link without anchor text" and original_message.startswith("Link without anchor text:"):
+                        link_url = original_message.replace("Link without anchor text:", "").strip()
+                        if link_url:
+                            issues_by_type[existing_key]['links_without_anchor_text'].add(link_url)
+                    continue
+                
+                # New issue - create entry
                 issue_key = f"{issue.get('category', 'Unknown')} - {issue.get('type', 'Unknown')} - {normalized_message}"
                 
-                if issue_key not in issues_by_type:
+                # Double-check: if issue_key already exists (same category/type), merge
+                if issue_key in issues_by_type:
+                    if url not in issues_by_type[issue_key]['affected_pages']:
+                        issues_by_type[issue_key]['affected_pages'].append(url)
+                    # Extract link URL if applicable
+                    if normalized_message == "Link without anchor text" and original_message.startswith("Link without anchor text:"):
+                        link_url = original_message.replace("Link without anchor text:", "").strip()
+                        if link_url:
+                            issues_by_type[issue_key]['links_without_anchor_text'].add(link_url)
+                else:
+                    # Truly new issue - create entry
+                    normalized_to_key[normalized_message] = issue_key
                     issues_by_type[issue_key] = {
                         'issue_name': normalized_message,
                         'category': issue.get('category', 'Unknown'),
@@ -555,15 +589,14 @@ class APIOutputGenerator:
                         'affected_pages': [],
                         'links_without_anchor_text': set()
                     }
-                # Track affected pages (avoid duplicates)
-                if url not in issues_by_type[issue_key]['affected_pages']:
-                    issues_by_type[issue_key]['affected_pages'].append(url)
-                
-                # Extract link URL from "Link without anchor text: URL" messages
-                if normalized_message == "Link without anchor text" and original_message.startswith("Link without anchor text:"):
-                    link_url = original_message.replace("Link without anchor text:", "").strip()
-                    if link_url:
-                        issues_by_type[issue_key]['links_without_anchor_text'].add(link_url)
+                    # Track affected pages
+                    if url not in issues_by_type[issue_key]['affected_pages']:
+                        issues_by_type[issue_key]['affected_pages'].append(url)
+                    # Extract link URL from "Link without anchor text: URL" messages
+                    if normalized_message == "Link without anchor text" and original_message.startswith("Link without anchor text:"):
+                        link_url = original_message.replace("Link without anchor text:", "").strip()
+                        if link_url:
+                            issues_by_type[issue_key]['links_without_anchor_text'].add(link_url)
         
         # Convert to list and sort by severity and count
         severity_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
@@ -661,7 +694,7 @@ class APIOutputGenerator:
             if image_urls:
                 images_without_alt_details[url] = image_urls
         
-        # Attach details to relevant issues in issues_list
+        # Attach details and criteria to relevant issues in issues_list
         for issue_dict in issues_list:
             issue_name = issue_dict.get('issue_name', '').lower()
             
@@ -672,6 +705,8 @@ class APIOutputGenerator:
                     issue_dict['details'] = details
                     # Remove affected_pages since details already contain URLs
                     issue_dict.pop('affected_pages', None)
+                # Update issue name with threshold
+                issue_dict['issue_name'] = 'Title too short (<30 characters, recommended: 30-70)'
             
             # Title too long - match variations like "title too long"
             elif 'title' in issue_name and 'too long' in issue_name:
@@ -680,6 +715,8 @@ class APIOutputGenerator:
                     issue_dict['details'] = details
                     # Remove affected_pages since details already contain URLs
                     issue_dict.pop('affected_pages', None)
+                # Update issue name with threshold
+                issue_dict['issue_name'] = 'Title too long (>70 characters, recommended: 30-70)'
             
             # Meta description too short - match variations
             elif ('meta description' in issue_name or 'description' in issue_name) and 'too short' in issue_name:
@@ -688,6 +725,8 @@ class APIOutputGenerator:
                     issue_dict['details'] = details
                     # Remove affected_pages since details already contain URLs
                     issue_dict.pop('affected_pages', None)
+                # Update issue name with threshold
+                issue_dict['issue_name'] = 'Meta description too short (<120 characters, recommended: 120-160)'
             
             # Meta description too long - match variations
             elif ('meta description' in issue_name or 'description' in issue_name) and 'too long' in issue_name:
@@ -696,6 +735,8 @@ class APIOutputGenerator:
                     issue_dict['details'] = details
                     # Remove affected_pages since details already contain URLs
                     issue_dict.pop('affected_pages', None)
+                # Update issue name with threshold
+                issue_dict['issue_name'] = 'Meta description too long (>160 characters, recommended: 120-160)'
             
             # Images missing alt text - match variations like "image(s) missing alt text"
             elif 'image' in issue_name and ('missing alt' in issue_name or 'alt' in issue_name):
@@ -714,12 +755,17 @@ class APIOutputGenerator:
                     # Remove affected_pages_count and affected_pages since we have image-specific data
                     issue_dict.pop('affected_pages_count', None)
                     issue_dict.pop('affected_pages', None)
+                # Update issue name with threshold
+                issue_dict['issue_name'] = 'Images missing alt text (missing alt attribute, penalty: -4 per image, max 3 counted)'
         
         # Add additional issues from other sections (crawlability, status codes, advanced SEO, etc.)
         additional_issues = self._extract_additional_issues(
             all_results, crawlability_info, orphan_pages
         )
         issues_list.extend(additional_issues)
+        
+        # Add thresholds to issue names that don't have them yet
+        self._add_thresholds_to_issue_names(issues_list)
         
         # Re-sort issues list after adding additional issues
         issues_list.sort(key=lambda x: (severity_order.get(x['severity'], 4), -x.get('affected_pages_count', x.get('number_of_images', 0))))
@@ -815,6 +861,18 @@ class APIOutputGenerator:
         if message.startswith("Canonical points to different URL:"):
             return "Canonical points to different URL"
         
+        # Normalize "Excessive internal links (count, recommended: <100)" to just "Excessive internal links"
+        if "excessive" in message.lower() and "internal link" in message.lower():
+            return "Excessive internal links"
+        
+        # Normalize "X potentially broken internal link(s)" to just "Potentially broken internal links"
+        if "potentially broken internal link" in message.lower():
+            return "Potentially broken internal links"
+        
+        # Normalize "X broken internal link(s)" to just "Broken internal links"
+        if re.match(r'^\d+\s+broken\s+internal\s+link', message, re.IGNORECASE):
+            return "Broken internal links"
+        
         # Remove leading numbers from "image(s) missing alt text" pattern
         message = re.sub(r'^\d+\s+(image\(s\)\s+missing\s+alt\s+text)', r'\1', message, flags=re.IGNORECASE)
         
@@ -837,6 +895,280 @@ class APIOutputGenerator:
             return original
         
         return message
+    
+    def _add_thresholds_to_issue_names(self, issues_list: List[Dict]):
+        """
+        Add thresholds directly to issue names that don't have them yet.
+        This ensures all issues have clear thresholds in their titles.
+        """
+        for issue_dict in issues_list:
+            # Skip if issue name already contains threshold (has parentheses with numbers or < >)
+            issue_name = issue_dict.get('issue_name', '')
+            if '(' in issue_name and (any(c.isdigit() for c in issue_name) or '<' in issue_name or '>' in issue_name):
+                continue
+            
+            issue_name_lower = issue_name.lower()
+            
+            # Excessive internal links
+            if 'excessive' in issue_name_lower and 'internal link' in issue_name_lower:
+                issue_dict['issue_name'] = 'Excessive internal links (>100 links per page, recommended: <100)'
+            
+            # Broken internal links
+            elif 'broken' in issue_name_lower and 'internal link' in issue_name_lower:
+                issue_dict['issue_name'] = 'Broken internal links (returns 404 or error, recommended: all return 200 OK)'
+            
+            # Link without anchor text
+            elif 'link' in issue_name_lower and 'anchor text' in issue_name_lower:
+                issue_dict['issue_name'] = 'Link without anchor text (no visible text, recommended: descriptive anchor text)'
+            
+            # Images with empty alt
+            elif 'image' in issue_name_lower and 'empty alt' in issue_name_lower:
+                issue_dict['issue_name'] = 'Images with empty alt text (alt="", penalty: -2 per image, max 2 counted)'
+            
+            # Missing title
+            elif 'missing title' in issue_name_lower:
+                issue_dict['issue_name'] = 'Missing title tag (no <title> tag found, recommended: unique descriptive title)'
+            
+            # Missing meta description
+            elif 'missing meta description' in issue_name_lower:
+                issue_dict['issue_name'] = 'Missing meta description (no <meta name="description"> tag, recommended: unique descriptive meta)'
+            
+            # No H1 tag
+            elif 'no h1' in issue_name_lower or ('h1' in issue_name_lower and 'found' in issue_name_lower):
+                issue_dict['issue_name'] = 'No H1 tag found (no <h1> tag, recommended: exactly one H1 per page)'
+            
+            # Multiple H1 tags
+            elif 'multiple h1' in issue_name_lower:
+                issue_dict['issue_name'] = 'Multiple H1 tags (>1 <h1> tag, recommended: exactly one H1 per page)'
+            
+            # Duplicate title
+            elif 'duplicate title' in issue_name_lower:
+                issue_dict['issue_name'] = 'Duplicate title tags (same title on multiple pages, recommended: unique title per page)'
+            
+            # Duplicate description
+            elif 'duplicate description' in issue_name_lower or ('duplicate' in issue_name_lower and 'meta description' in issue_name_lower):
+                issue_dict['issue_name'] = 'Duplicate meta descriptions (same description on multiple pages, recommended: unique description per page)'
+            
+            # Title template/default
+            elif 'template' in issue_name_lower or 'default' in issue_name_lower:
+                issue_dict['issue_name'] = 'Title appears to be template/default (<20 chars with generic words, recommended: descriptive unique title)'
+            
+            # H1 identical to title
+            elif 'h1' in issue_name_lower and 'identical' in issue_name_lower:
+                issue_dict['issue_name'] = 'H1 identical to title (H1 text matches title exactly, recommended: related but not identical)'
+            
+            # Orphan pages
+            elif 'orphan' in issue_name_lower:
+                issue_dict['issue_name'] = 'Orphan pages (0 internal in-links, recommended: at least one internal link, homepage excluded)'
+            
+            # Missing robots.txt
+            elif 'missing robots.txt' in issue_name_lower:
+                issue_dict['issue_name'] = 'Missing robots.txt file (not found at /robots.txt, recommended: provide robots.txt)'
+            
+            # No sitemaps found
+            elif 'no sitemaps found' in issue_name_lower:
+                issue_dict['issue_name'] = 'No sitemaps found (no XML sitemap URLs found, recommended: provide sitemap(s))'
+            
+            # Missing llms.txt
+            elif 'llms.txt' in issue_name_lower:
+                issue_dict['issue_name'] = 'Missing llms.txt file (not found at /llms.txt, recommended: provide llms.txt)'
+            
+            # 404 responses
+            elif '404' in issue_name and 'not found' in issue_name_lower:
+                issue_dict['issue_name'] = 'Pages returning 404 Not Found (HTTP 404 status, recommended: fix or redirect with 301)'
+            
+            # Missing viewport
+            elif 'viewport' in issue_name_lower:
+                issue_dict['issue_name'] = 'Missing viewport meta tag (no <meta name="viewport">, recommended: include for responsive design)'
+            
+            # Missing Cache-Control
+            elif 'cache-control' in issue_name_lower:
+                issue_dict['issue_name'] = 'Missing Cache-Control header (no Cache-Control HTTP header, recommended: set appropriate headers)'
+            
+            # Missing compression
+            elif 'compression' in issue_name_lower:
+                issue_dict['issue_name'] = 'Missing content compression (no Content-Encoding header, recommended: enable gzip/deflate/brotli)'
+            
+            # Canonical issues
+            elif 'canonical' in issue_name_lower:
+                if '404' in issue_name:
+                    issue_dict['issue_name'] = 'Canonical points to 404 (canonical URL returns 404, recommended: point to accessible page)'
+                elif 'homepage' in issue_name_lower:
+                    issue_dict['issue_name'] = 'Canonical points to homepage (points to homepage instead of current page, recommended: self-referencing)'
+                elif 'different url' in issue_name_lower:
+                    issue_dict['issue_name'] = 'Canonical points to different URL (points to different URL, recommended: typically self-referencing)'
+            
+            # Redirect issues
+            elif 'redirect' in issue_name_lower:
+                if 'chain' in issue_name_lower and '404' in issue_name:
+                    issue_dict['issue_name'] = 'Redirect chain ends in 404 (chain ends in 404, recommended: end at valid page)'
+                elif 'chain' in issue_name_lower and 'too long' in issue_name_lower:
+                    issue_dict['issue_name'] = 'Redirect chain too long (>3 redirects, recommended: 1-2 redirects max)'
+                elif 'loop' in issue_name_lower:
+                    issue_dict['issue_name'] = 'Redirect loop (creates circular redirect, recommended: fix immediately)'
+                elif '302' in issue_name or 'temporary' in issue_name_lower:
+                    issue_dict['issue_name'] = 'Temporary redirect 302 (uses 302 instead of 301, recommended: use 301 for permanent changes)'
+            
+            # Noindex issues
+            elif 'noindex' in issue_name_lower:
+                issue_dict['issue_name'] = 'Page has noindex directive (meta robots or X-Robots-Tag, recommended: remove if page should be indexed)'
+            
+            # HTTPS issues
+            elif ('https' in issue_name_lower or 'not https' in issue_name_lower) and 'mixed' not in issue_name_lower:
+                issue_dict['issue_name'] = 'Page not using HTTPS (uses HTTP, recommended: use HTTPS for all pages)'
+            
+            # Mixed content
+            elif 'mixed content' in issue_name_lower:
+                issue_dict['issue_name'] = 'Mixed content (HTTPS page loads HTTP resources, recommended: load all resources over HTTPS)'
+            
+            # Structured data issues
+            elif 'structured data' in issue_name_lower:
+                if 'missing' in issue_name_lower:
+                    issue_dict['issue_name'] = 'Missing structured data (no JSON-LD/microdata/RDFa, recommended: implement for rich snippets)'
+                elif 'duplicate' in issue_name_lower:
+                    issue_dict['issue_name'] = 'Duplicate structured data (multiple instances of same type, recommended: one per type per page)'
+            
+            # Server error
+            elif 'server error' in issue_name_lower or '500' in issue_name:
+                issue_dict['issue_name'] = 'Server error (returns 5xx status, recommended: fix immediately)'
+    
+    def _analyze_url_structure(self, all_results: List[Dict]) -> Dict:
+        """
+        Analyze URL structure for SEO best practices.
+        Checks for: depth, hyphens vs underscores, lowercase, special chars, query params, length, etc.
+        """
+        import re
+        from urllib.parse import urlparse, parse_qs
+        
+        total_pages = len(all_results)
+        if total_pages == 0:
+            return {
+                'total_pages': 0,
+                'well_structured_urls': 0,
+                'poorly_structured_urls': 0,
+                'well_structured_percentage': 0,
+                'url_depth_stats': {},
+                'urls_with_underscores': 0,
+                'urls_with_uppercase': 0,
+                'urls_with_special_chars': 0,
+                'urls_with_tracking_params': 0,
+                'urls_too_long': 0,
+                'urls_too_deep': 0,
+                'average_url_length': 0,
+                'average_url_depth': 0
+            }
+        
+        well_structured = 0
+        poorly_structured = []
+        depth_distribution = {}
+        urls_with_underscores = 0
+        urls_with_uppercase = 0
+        urls_with_special_chars = 0
+        urls_with_tracking_params = 0
+        urls_too_long = 0
+        urls_too_deep = 0
+        total_url_length = 0
+        total_url_depth = 0
+        
+        # Tracking parameter patterns
+        tracking_params = ['utm_', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+                          'ref', 'source', 'fbclid', 'gclid', 'mc_cid', 'mc_eid', '_ga', '_gid',
+                          'sessionid', 'sid', 'phpsessid', 'jsessionid', 'aspsessionid']
+        
+        for result in all_results:
+            url = result.get('url', '')
+            if not url:
+                continue
+            
+            parsed = urlparse(url)
+            path = parsed.path
+            query = parsed.query
+            
+            # Calculate URL depth (number of path segments)
+            path_segments = [s for s in path.split('/') if s]
+            depth = len(path_segments)
+            total_url_depth += depth
+            
+            # Track depth distribution
+            depth_key = f"depth_{depth}"
+            depth_distribution[depth_key] = depth_distribution.get(depth_key, 0) + 1
+            
+            # Calculate URL length
+            url_length = len(url)
+            total_url_length += url_length
+            
+            # Check various URL structure issues
+            issues = []
+            
+            # 1. Check for underscores (should use hyphens)
+            if '_' in path:
+                urls_with_underscores += 1
+                issues.append('contains_underscores')
+            
+            # 2. Check for uppercase letters (should be lowercase)
+            if any(c.isupper() for c in path):
+                urls_with_uppercase += 1
+                issues.append('contains_uppercase')
+            
+            # 3. Check for special characters (except hyphens, slashes, dots)
+            special_chars_pattern = r'[^a-zA-Z0-9\-/._]'
+            if re.search(special_chars_pattern, path):
+                urls_with_special_chars += 1
+                issues.append('contains_special_chars')
+            
+            # 4. Check for tracking parameters
+            query_params = parse_qs(query)
+            has_tracking = any(any(tp in param.lower() for tp in tracking_params) for param in query_params.keys())
+            if has_tracking:
+                urls_with_tracking_params += 1
+                issues.append('has_tracking_params')
+            
+            # 5. Check URL length (recommended: <100 characters)
+            if url_length > 100:
+                urls_too_long += 1
+                issues.append('too_long')
+            
+            # 6. Check URL depth (recommended: <5 levels)
+            if depth > 5:
+                urls_too_deep += 1
+                issues.append('too_deep')
+            
+            # URL is well-structured if it has no issues
+            if not issues:
+                well_structured += 1
+            else:
+                poorly_structured.append({
+                    'url': url,
+                    'issues': issues,
+                    'depth': depth,
+                    'length': url_length
+                })
+        
+        # Calculate averages
+        avg_url_length = round(total_url_length / total_pages, 2) if total_pages > 0 else 0
+        avg_url_depth = round(total_url_depth / total_pages, 2) if total_pages > 0 else 0
+        
+        # Build depth stats
+        depth_stats = {}
+        for depth_key, count in sorted(depth_distribution.items(), key=lambda x: int(x[0].split('_')[1])):
+            depth_level = depth_key.split('_')[1]
+            depth_stats[f'depth_{depth_level}'] = count
+        
+        return {
+            'total_pages': total_pages,
+            'well_structured_urls': well_structured,
+            'poorly_structured_urls': len(poorly_structured),
+            'well_structured_percentage': round((well_structured / total_pages * 100), 2) if total_pages > 0 else 0,
+            'url_depth_stats': depth_stats,
+            'urls_with_underscores': urls_with_underscores,
+            'urls_with_uppercase': urls_with_uppercase,
+            'urls_with_special_chars': urls_with_special_chars,
+            'urls_with_tracking_params': urls_with_tracking_params,
+            'urls_too_long': urls_too_long,
+            'urls_too_deep': urls_too_deep,
+            'average_url_length': avg_url_length,
+            'average_url_depth': avg_url_depth
+        }
     
     def _extract_additional_seo_data(self, all_results: List[Dict]) -> Dict:
         """Extract additional SEO data: Open Graph, Twitter Cards, external links, content analysis, etc."""
@@ -1135,19 +1467,13 @@ class APIOutputGenerator:
             # Limit to first 50 images
             oversized_images_data = oversized_images_data[:50]
             additional_issues.append({
-                'issue_name': 'Oversized or unoptimized images',
+                'issue_name': 'Oversized or unoptimized images (missing width/height OR >2000px dimensions OR >5:1 aspect ratio, recommended: include dimensions, optimize size)',
                 'category': 'On-Page',
                 'type': 'Image Optimization',
                 'severity': 'medium',
                 'number_of_issues': 1,
                 'number_of_images': len(oversized_images_data),
                 'oversized_images': oversized_images_data,
-                'criteria': [
-                    'Missing width/height attributes (can cause layout shift)',
-                    'Large dimensions (>2000px width or height)',
-                    'Extreme aspect ratio (>5:1)',
-                    'Invalid dimension values'
-                ],
                 'description': f'{len(oversized_images_data)} image(s) may be oversized or unoptimized. Images are flagged if they: (1) are missing width/height attributes, (2) have dimensions larger than 2000px, (3) have extreme aspect ratios (>5:1), or (4) have invalid dimension values. These issues can cause layout shifts, slow page loads, and poor user experience.'
             })
         
@@ -1217,6 +1543,119 @@ class APIOutputGenerator:
                 'affected_pages': sorted(pages_without_compression)[:50],
                 'description': f'{len(pages_without_compression)} page(s) are not using content compression (gzip/deflate/brotli), which can slow down page loads.'
             })
+        
+        # === URL STRUCTURE ISSUES ===
+        from urllib.parse import urlparse
+        import re
+        
+        url_structure_data = self._analyze_url_structure(all_results)
+        
+        # URLs with underscores
+        if url_structure_data.get('urls_with_underscores', 0) > 0:
+            urls_with_underscores_list = []
+            for result in all_results:
+                url = result.get('url', '')
+                if url and '_' in urlparse(url).path:
+                    urls_with_underscores_list.append(url)
+            
+            if urls_with_underscores_list:
+                additional_issues.append({
+                    'issue_name': 'URLs contain underscores',
+                    'category': 'On-Page',
+                    'type': 'URL Structure',
+                    'severity': 'low',
+                    'number_of_issues': 1,
+                    'affected_pages_count': len(urls_with_underscores_list),
+                    'affected_pages': sorted(urls_with_underscores_list)[:50],
+                    'description': f'{len(urls_with_underscores_list)} URL(s) contain underscores. Use hyphens instead for better SEO.'
+                })
+        
+        # URLs with uppercase
+        if url_structure_data.get('urls_with_uppercase', 0) > 0:
+            urls_with_uppercase_list = []
+            for result in all_results:
+                url = result.get('url', '')
+                if url:
+                    path = urlparse(url).path
+                    if any(c.isupper() for c in path):
+                        urls_with_uppercase_list.append(url)
+            
+            if urls_with_uppercase_list:
+                additional_issues.append({
+                    'issue_name': 'URLs contain uppercase letters (contains A-Z in path, recommended: lowercase only)',
+                    'category': 'On-Page',
+                    'type': 'URL Structure',
+                    'severity': 'low',
+                    'number_of_issues': 1,
+                    'affected_pages_count': len(urls_with_uppercase_list),
+                    'affected_pages': sorted(urls_with_uppercase_list)[:50],
+                    'description': f'{len(urls_with_uppercase_list)} URL(s) contain uppercase letters. URLs should be lowercase for consistency and SEO.'
+                })
+        
+        # URLs too long
+        if url_structure_data.get('urls_too_long', 0) > 0:
+            urls_too_long_list = []
+            for result in all_results:
+                url = result.get('url', '')
+                if url and len(url) > 100:
+                    urls_too_long_list.append(url)
+            
+            if urls_too_long_list:
+                additional_issues.append({
+                    'issue_name': 'URLs too long (>100 characters, recommended: <100)',
+                    'category': 'On-Page',
+                    'type': 'URL Structure',
+                    'severity': 'medium',
+                    'number_of_issues': 1,
+                    'affected_pages_count': len(urls_too_long_list),
+                    'affected_pages': sorted(urls_too_long_list)[:50],
+                    'description': f'{len(urls_too_long_list)} URL(s) exceed 100 characters. Long URLs can be truncated in search results and are harder to share.'
+                })
+        
+        # URLs too deep
+        if url_structure_data.get('urls_too_deep', 0) > 0:
+            urls_too_deep_list = []
+            for result in all_results:
+                url = result.get('url', '')
+                if url:
+                    path = urlparse(url).path
+                    depth = len([s for s in path.split('/') if s])
+                    if depth > 5:
+                        urls_too_deep_list.append(url)
+            
+            if urls_too_deep_list:
+                additional_issues.append({
+                    'issue_name': 'URLs too deep (>5 path levels, recommended: <5)',
+                    'category': 'On-Page',
+                    'type': 'URL Structure',
+                    'severity': 'medium',
+                    'number_of_issues': 1,
+                    'affected_pages_count': len(urls_too_deep_list),
+                    'affected_pages': sorted(urls_too_deep_list)[:50],
+                    'description': f'{len(urls_too_deep_list)} URL(s) have more than 5 levels of depth. Deep URLs can be harder to crawl and less user-friendly.'
+                })
+        
+        # URLs with special characters
+        if url_structure_data.get('urls_with_special_chars', 0) > 0:
+            urls_with_special_chars_list = []
+            for result in all_results:
+                url = result.get('url', '')
+                if url:
+                    path = urlparse(url).path
+                    if re.search(r'[^a-zA-Z0-9\-/._]', path):
+                        urls_with_special_chars_list.append(url)
+            
+            if urls_with_special_chars_list:
+                additional_issues.append({
+                    'issue_name': 'URLs contain special characters (contains non-alphanumeric chars, recommended: only a-z, 0-9, hyphens, slashes)',
+                    'category': 'On-Page',
+                    'type': 'URL Structure',
+                    'severity': 'low',
+                    'number_of_issues': 1,
+                    'affected_pages_count': len(urls_with_special_chars_list),
+                    'affected_pages': sorted(urls_with_special_chars_list)[:50],
+                    'description': f'{len(urls_with_special_chars_list)} URL(s) contain special characters. Clean URLs with only alphanumeric characters, hyphens, and slashes are preferred for SEO.'
+                })
         
         return additional_issues
     
